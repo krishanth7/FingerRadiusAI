@@ -5,6 +5,7 @@ Multi-hand Professional Dashboard for Hand Finger Radius Tracking
 Controls:
     Q / ESC  - Quit       E - Export CSV      R - Reset
     T        - Trails     G - Toggle graph    S - Screenshot
+    D        - Toggle 2D/3D radius mode
 """
 
 import sys
@@ -66,7 +67,7 @@ def _draw_hand_section(p, y, pw, hand_label, hand_status, pair_radii, hand_idx):
 
 
 def create_panel(panel_h, fps, frame_count, num_hands,
-                 hand_data, show_trails, show_graph):
+                 hand_data, show_trails, show_graph, use_3d=False):
     """Create the professional side panel supporting multi-hand display."""
     pw = PANEL_WIDTH
     p = np.full((panel_h, pw, 3), COLORS["bg_secondary"], dtype=np.uint8)
@@ -105,6 +106,15 @@ def create_panel(panel_h, fps, frame_count, num_hands,
                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, h_color, 1, cv2.LINE_AA)
     y += 20
 
+    # Mode (2D / 3D)
+    mode_label = "3D" if use_3d else "2D"
+    mode_color = COLORS["accent"] if use_3d else COLORS["success"]
+    cv2.putText(p, "Mode", (32, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLORS["text_label"], 1, cv2.LINE_AA)
+    cv2.putText(p, mode_label, (pw - 50, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, mode_color, 1, cv2.LINE_AA)
+    y += 20
+
     cv2.putText(p, "Frame", (32, y),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLORS["text_label"], 1, cv2.LINE_AA)
     cv2.putText(p, f"{frame_count}", (pw - 70, y),
@@ -126,7 +136,7 @@ def create_panel(panel_h, fps, frame_count, num_hands,
         y += 20
 
     # Controls
-    y = max(y, panel_h - 160)
+    y = max(y, panel_h - 180)
     cv2.putText(p, "CONTROLS", (16, y),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLORS["text_tertiary"], 1, cv2.LINE_AA)
     y += 6
@@ -137,6 +147,7 @@ def create_panel(panel_h, fps, frame_count, num_hands,
         ("Q", "Quit"), ("E", "Export CSV"), ("R", "Reset"),
         ("T", f"Trails {'ON' if show_trails else 'OFF'}"),
         ("G", f"Graph {'ON' if show_graph else 'OFF'}"),
+        ("D", f"{'3D' if use_3d else '2D'} Radius"),
         ("S", "Screenshot"),
     ]
     for key, desc in controls:
@@ -151,7 +162,7 @@ def create_panel(panel_h, fps, frame_count, num_hands,
 
     # Footer
     draw_divider(p, panel_h - 25, 0, pw, COLORS["border"])
-    cv2.putText(p, "v2.0  |  FingerRadiusAI", (16, panel_h - 8),
+    cv2.putText(p, "v2.1  |  FingerRadiusAI", (16, panel_h - 8),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.28, COLORS["text_tertiary"], 1, cv2.LINE_AA)
     cv2.line(p, (pw - 1, 0), (pw - 1, panel_h), COLORS["border"], 1)
 
@@ -160,7 +171,7 @@ def create_panel(panel_h, fps, frame_count, num_hands,
 
 def main():
     print("=" * 50)
-    print("  FingerRadiusAI - Multi-Hand Tracker v2.0")
+    print("  FingerRadiusAI - Multi-Hand Tracker v2.1")
     print("=" * 50)
     print("Starting camera...")
 
@@ -185,6 +196,7 @@ def main():
     frame_count = 0
     show_trails = True
     show_graph = True
+    use_3d = False
 
     print("Camera ready. Show 1 or 2 hands! Press Q or ESC to quit.\n")
 
@@ -204,25 +216,31 @@ def main():
         hand_data = []
         for hi in range(num_hands):
             lm = tracker.get_landmarks(hi)
+            lm_3d = tracker.get_landmarks_3d(hi) if use_3d else None
             if lm is not None:
-                pr, wr, status = calculators[hi].compute(lm)
+                pr, wr, status, dd = calculators[hi].compute(
+                    lm, landmarks_3d=lm_3d, use_3d=use_3d
+                )
                 label = tracker.get_label(hi)
                 graph_viz.update(pr, hand_idx=hi, label=label)
+                mode_tag = "3D" if use_3d else "2D"
                 csv_exporter.record(
-                    {f"{label}_{k}": v for k, v in pr.items()},
+                    {f"{label}_{k}_{mode_tag}": v for k, v in pr.items()},
                     f"{label}:{status}"
                 )
                 hand_data.append({
                     "label": label, "status": status,
                     "pair_radii": pr, "wrist_radii": wr,
-                    "landmarks": lm,
+                    "depth_deltas": dd, "landmarks": lm,
                 })
 
         # Draw all hands
         tracker.draw_all(frame, show_trails)
         for hi, hd in enumerate(hand_data):
-            calculators[hi].draw_radii(frame, hd["landmarks"],
-                                        hd["pair_radii"], hd["wrist_radii"])
+            calculators[hi].draw_radii(
+                frame, hd["landmarks"], hd["pair_radii"], hd["wrist_radii"],
+                use_3d=use_3d, depth_deltas=hd.get("depth_deltas")
+            )
 
         fps = fps_counter.fps
 
@@ -255,7 +273,8 @@ def main():
             video_col = frame
 
         panel = create_panel(video_col.shape[0], fps, frame_count,
-                             num_hands, hand_data, show_trails, show_graph)
+                             num_hands, hand_data, show_trails, show_graph,
+                             use_3d=use_3d)
         composite = np.hstack([panel, video_col])
 
         cv2.imshow(WINDOW_NAME, composite)
@@ -275,6 +294,10 @@ def main():
             show_trails = not show_trails
         elif key == ord('g'):
             show_graph = not show_graph
+        elif key == ord('d'):
+            use_3d = not use_3d
+            mode = "3D (depth-aware)" if use_3d else "2D"
+            print(f"[INFO] Radius mode: {mode}")
         elif key == ord('s'):
             fn = f"screenshot_{int(time.time())}.png"
             cv2.imwrite(fn, composite)

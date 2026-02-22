@@ -1,16 +1,17 @@
 """
 radius_calculator.py - Finger radius computation & hand status detection.
+Supports both 2D and 3D (depth-aware) distance calculation.
 Professional visualization with clean metrics overlay.
 """
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import cv2
 import numpy as np
 
 from src.hand_tracker import FINGER_TIPS, LandmarkIndex
 from src.utils import (
-    euclidean_distance,
+    euclidean_distance, euclidean_distance_3d,
     ExponentialMovingAverage,
     COLORS, FINGER_NAMES, FINGER_KEYS,
     draw_clean_line, draw_dot, draw_label, draw_status_badge,
@@ -36,7 +37,7 @@ WRIST_TIP_PAIRS = [
 
 class RadiusCalculator:
     """
-    Computes smoothed finger-pair and wrist-to-tip distances,
+    Computes smoothed finger-pair and wrist-to-tip distances (2D or 3D),
     classifies hand gestures, and renders professional metric overlays.
     """
 
@@ -45,29 +46,56 @@ class RadiusCalculator:
     PINCH_THRESHOLD = 40
 
     def __init__(self, smoothing_alpha: float = 0.35):
+        # 2D smoothers
         self._pair_smoothers: Dict[str, ExponentialMovingAverage] = {
             name: ExponentialMovingAverage(smoothing_alpha) for name, _, _ in RADIUS_PAIRS
         }
         self._wrist_smoothers: Dict[str, ExponentialMovingAverage] = {
             name: ExponentialMovingAverage(smoothing_alpha) for name, _, _ in WRIST_TIP_PAIRS
         }
+        # 3D smoothers (separate set for clean switching)
+        self._pair_smoothers_3d: Dict[str, ExponentialMovingAverage] = {
+            name: ExponentialMovingAverage(smoothing_alpha) for name, _, _ in RADIUS_PAIRS
+        }
+        self._wrist_smoothers_3d: Dict[str, ExponentialMovingAverage] = {
+            name: ExponentialMovingAverage(smoothing_alpha) for name, _, _ in WRIST_TIP_PAIRS
+        }
 
     def compute(
-        self, landmarks: List[Tuple[int, int]]
+        self,
+        landmarks: List[Tuple[int, int]],
+        landmarks_3d: Optional[List[Tuple[int, int, float]]] = None,
+        use_3d: bool = False,
     ) -> tuple:
-        """Compute all radius values. Returns (pair_radii, wrist_radii, hand_status)."""
+        """
+        Compute all radius values.
+        Returns (pair_radii, wrist_radii, hand_status, depth_deltas).
+        depth_deltas maps pair name -> z-difference (only when 3D data available).
+        """
         pair_radii: Dict[str, float] = {}
+        depth_deltas: Dict[str, float] = {}
+
         for name, a, b in RADIUS_PAIRS:
-            raw = euclidean_distance(landmarks[a], landmarks[b])
-            pair_radii[name] = self._pair_smoothers[name].update(raw)
+            if use_3d and landmarks_3d is not None:
+                raw = euclidean_distance_3d(landmarks_3d[a], landmarks_3d[b])
+                pair_radii[name] = self._pair_smoothers_3d[name].update(raw)
+                depth_deltas[name] = abs(landmarks_3d[a][2] - landmarks_3d[b][2])
+            else:
+                raw = euclidean_distance(landmarks[a], landmarks[b])
+                pair_radii[name] = self._pair_smoothers[name].update(raw)
+                depth_deltas[name] = 0.0
 
         wrist_radii: Dict[str, float] = {}
         for name, a, b in WRIST_TIP_PAIRS:
-            raw = euclidean_distance(landmarks[a], landmarks[b])
-            wrist_radii[name] = self._wrist_smoothers[name].update(raw)
+            if use_3d and landmarks_3d is not None:
+                raw = euclidean_distance_3d(landmarks_3d[a], landmarks_3d[b])
+                wrist_radii[name] = self._wrist_smoothers_3d[name].update(raw)
+            else:
+                raw = euclidean_distance(landmarks[a], landmarks[b])
+                wrist_radii[name] = self._wrist_smoothers[name].update(raw)
 
         hand_status = self._classify_hand(pair_radii)
-        return pair_radii, wrist_radii, hand_status
+        return pair_radii, wrist_radii, hand_status, depth_deltas
 
     def _classify_hand(self, pair_radii: Dict[str, float]) -> str:
         values = list(pair_radii.values())
@@ -85,11 +113,12 @@ class RadiusCalculator:
         landmarks: List[Tuple[int, int]],
         pair_radii: Dict[str, float],
         wrist_radii: Dict[str, float],
+        use_3d: bool = False,
+        depth_deltas: Optional[Dict[str, float]] = None,
     ):
         """Draw professional radius visualization on the video frame."""
         h, w = frame.shape[:2]
 
-        # 1) Adjacent finger-pair radius lines and labels
         for i, (name, a, b) in enumerate(RADIUS_PAIRS):
             pa, pb = landmarks[a], landmarks[b]
             cx = (pa[0] + pb[0]) // 2
@@ -97,40 +126,42 @@ class RadiusCalculator:
             radius_px = int(pair_radii[name] / 2)
             color = COLORS[FINGER_KEYS[i]]
 
-            # Dashed-style connecting line between tips
+            # Connecting line
             cv2.line(frame, pa, pb, color, 1, cv2.LINE_AA)
 
-            # Clean radius circle (semi-transparent)
+            # Radius circle
             if radius_px > 3:
                 overlay = frame.copy()
                 cv2.circle(overlay, (cx, cy), radius_px, color, 1, cv2.LINE_AA)
                 cv2.addWeighted(overlay, 0.4, frame, 0.6, 0, frame)
 
-            # Midpoint dot
             cv2.circle(frame, (cx, cy), 2, color, -1, cv2.LINE_AA)
 
-            # Clean numerical label with background
-            label = f"{pair_radii[name]:.0f}"
+            # Build label text
+            val_str = f"{pair_radii[name]:.0f}"
+            if use_3d and depth_deltas and name in depth_deltas:
+                dz = depth_deltas[name]
+                val_str = f"{pair_radii[name]:.0f} z{dz:.0f}"
+
             font = cv2.FONT_HERSHEY_SIMPLEX
-            fs = 0.38
-            (tw, th), bl = cv2.getTextSize(label, font, fs, 1)
+            fs = 0.35
+            (tw, th), bl = cv2.getTextSize(val_str, font, fs, 1)
             lx, ly = cx + 12, cy - 4
+
             # Label background
             draw_filled_rect(frame,
                              (lx - 3, ly - th - 2),
                              (lx + tw + 3, ly + bl + 2),
-                             COLORS["bg_primary"], alpha=0.65)
-            cv2.putText(frame, label, (lx, ly), font, fs, color, 1, cv2.LINE_AA)
+                             COLORS["bg_primary"], alpha=0.7)
+            cv2.putText(frame, val_str, (lx, ly), font, fs, color, 1, cv2.LINE_AA)
 
-        # 2) Wrist-to-tip lines (very subtle dashed look)
+        # Wrist-to-tip dotted lines
         wrist = landmarks[LandmarkIndex.WRIST]
         for i, (name, _, tip_idx) in enumerate(WRIST_TIP_PAIRS):
             tip = landmarks[tip_idx]
-            # Draw dotted line by drawing short segments
             self._draw_dotted_line(frame, wrist, tip, COLORS["bone"], gap=8)
 
     def _draw_dotted_line(self, img, pt1, pt2, color, gap=8):
-        """Draw a dotted line between two points."""
         dx = pt2[0] - pt1[0]
         dy = pt2[1] - pt1[1]
         dist = max(1, int((dx**2 + dy**2) ** 0.5))
@@ -145,7 +176,6 @@ class RadiusCalculator:
             cv2.line(img, (x1, y1), (x2, y2), color, 1, cv2.LINE_AA)
 
     def draw_status(self, frame: np.ndarray, status: str, position: Tuple[int, int] = (15, 60)):
-        """Draw hand status badge in corporate style."""
         color_map = {
             "Open":    COLORS["success"],
             "Closed":  COLORS["warning"],

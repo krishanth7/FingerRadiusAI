@@ -72,8 +72,10 @@ class _HandState:
     def __init__(self, smoothing_alpha: float, trail_length: int):
         self.smoothers_x = [ExponentialMovingAverage(smoothing_alpha) for _ in range(21)]
         self.smoothers_y = [ExponentialMovingAverage(smoothing_alpha) for _ in range(21)]
+        self.smoothers_z = [ExponentialMovingAverage(smoothing_alpha) for _ in range(21)]
         self.trails = {tip: deque(maxlen=trail_length) for tip in FINGER_TIPS}
         self.landmarks: Optional[List[Tuple[int, int]]] = None
+        self.landmarks_3d: Optional[List[Tuple[int, int, float]]] = None
         self.label: str = "Unknown"  # "Left" or "Right"
 
     def reset_trails(self):
@@ -154,22 +156,29 @@ class HandTracker:
                 state.label = f"Hand {hand_idx + 1}"
 
             coords = []
+            coords_3d = []
             for i, lm in enumerate(hand_lm):
                 px = int(lm.x * w)
                 py = int(lm.y * h)
+                # z is relative depth; scale to pixel-space using image width
+                pz = lm.z * w
                 sx = int(state.smoothers_x[i].update(px))
                 sy = int(state.smoothers_y[i].update(py))
+                sz = state.smoothers_z[i].update(pz)
                 coords.append((sx, sy))
+                coords_3d.append((sx, sy, sz))
 
             for tip_idx in FINGER_TIPS:
                 state.trails[tip_idx].append(coords[tip_idx])
 
             state.landmarks = coords
+            state.landmarks_3d = coords_3d
             self.hands.append(state)
 
         # Clear state for hands that disappeared
         for hand_idx in range(num, self.max_num_hands):
             self._hand_states[hand_idx].landmarks = None
+            self._hand_states[hand_idx].landmarks_3d = None
 
         return num
 
@@ -243,9 +252,15 @@ class HandTracker:
                 self.draw_trails(frame, i)
 
     def get_landmarks(self, hand_idx: int = 0):
-        """Get landmarks for a specific hand, or None."""
+        """Get 2D landmarks (x, y) for a specific hand, or None."""
         if hand_idx < len(self.hands) and self.hands[hand_idx].landmarks:
             return self.hands[hand_idx].landmarks
+        return None
+
+    def get_landmarks_3d(self, hand_idx: int = 0):
+        """Get 3D landmarks (x, y, z) for a specific hand, or None."""
+        if hand_idx < len(self.hands) and self.hands[hand_idx].landmarks_3d:
+            return self.hands[hand_idx].landmarks_3d
         return None
 
     def get_label(self, hand_idx: int = 0) -> str:

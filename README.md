@@ -44,6 +44,7 @@ The system supports **simultaneous two-hand tracking**, monitoring all **21 land
 - ✅ Hand status badge overlay
 - ✅ Multi-hand support — Track and display radii for both hands simultaneously
 - ✅ Left / Right hand labeling with per-hand status
+- ✅ 3D radius mode — Depth-aware distance using MediaPipe z-coordinates (toggle with D key)
 - ✅ Professional corporate dashboard UI
 - ✅ Side analytics panel with live stats, radius bars, and controls
 
@@ -129,6 +130,7 @@ python main.py
 | `R`         | Reset data buffers         |
 | `T`         | Toggle motion trails       |
 | `G`         | Toggle graph panel         |
+| `D`         | Toggle 2D / 3D radius mode |
 | `S`         | Take a screenshot          |
 
 ### Output
@@ -166,7 +168,7 @@ Camera Frame
 ## 🔮 Future Improvements
 
 - [x] **Multi-hand support** — Track and display radii for both hands simultaneously
-- [ ] **3D radius** — Use MediaPipe z-coordinates for depth-aware distance
+- [x] **3D radius** — Use MediaPipe z-coordinates for depth-aware distance
 - [ ] **Gesture library** — Recognize more gestures (peace, thumbs-up, OK, pointing)
 - [ ] **PyQt / Tkinter GUI** — Windowed UI with settings panel and playback controls
 - [ ] **Video file input** — Process pre-recorded video files instead of live camera

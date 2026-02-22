@@ -130,6 +130,13 @@ def euclidean_distance(p1, p2):
     return math.sqrt((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2)
 
 
+def euclidean_distance_3d(p1, p2):
+    """3D Euclidean distance using (x, y, z) tuples."""
+    return math.sqrt(
+        (p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2 + (p1[2] - p2[2]) ** 2
+    )
+
+
 # ── Professional UI Drawing ──
 
 def draw_filled_rect(img, pt1, pt2, color, alpha=1.0):
