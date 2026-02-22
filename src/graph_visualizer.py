@@ -1,10 +1,10 @@
 """
 graph_visualizer.py - Professional real-time radius graph panel.
-Corporate dashboard-style chart rendered with OpenCV.
+Supports rendering data for two hands with solid vs dashed lines.
 """
 
 from collections import deque
-from typing import Dict, Tuple
+from typing import Dict, Tuple, List
 
 import cv2
 import numpy as np
@@ -13,7 +13,7 @@ from src.utils import COLORS, FINGER_KEYS, draw_filled_rect, draw_divider
 
 
 class GraphVisualizer:
-    """Professional scrolling line chart for finger radius data."""
+    """Professional scrolling chart supporting multi-hand radius data."""
 
     def __init__(self, width=500, height=260, max_points=200, y_range=(0, 300)):
         self.width = width
@@ -27,31 +27,44 @@ class GraphVisualizer:
         self.plot_w = self.width - self.margin_left - self.margin_right
         self.plot_h = self.height - self.margin_top - self.margin_bottom
         self.pair_names = ["Thumb-Index", "Index-Middle", "Middle-Ring", "Ring-Pinky"]
-        self.buffers: Dict[str, deque] = {
-            name: deque(maxlen=max_points) for name in self.pair_names
-        }
 
-    def update(self, pair_radii: Dict[str, float]):
+        # Buffers for up to 2 hands
+        self.hand_buffers: List[Dict[str, deque]] = [
+            {name: deque(maxlen=max_points) for name in self.pair_names},
+            {name: deque(maxlen=max_points) for name in self.pair_names},
+        ]
+        self.hand_labels = ["Hand 1", "Hand 2"]
+
+    def update(self, pair_radii: Dict[str, float], hand_idx: int = 0,
+               label: str = ""):
+        """Push radius values for a specific hand."""
+        if hand_idx >= 2:
+            return
         for name in self.pair_names:
-            self.buffers[name].append(pair_radii.get(name, 0.0))
+            self.hand_buffers[hand_idx][name].append(pair_radii.get(name, 0.0))
+        if label:
+            self.hand_labels[hand_idx] = label
 
-    def render(self) -> np.ndarray:
+    def render(self, num_hands: int = 1) -> np.ndarray:
         img = np.full((self.height, self.width, 3), COLORS["bg_primary"], dtype=np.uint8)
-        self._draw_header(img)
+        self._draw_header(img, num_hands)
         self._draw_plot_area(img)
         self._draw_grid(img)
         self._draw_axes_labels(img)
-        self._draw_lines(img)
-        self._draw_legend(img)
+        # Draw lines for each detected hand
+        for hi in range(min(num_hands, 2)):
+            self._draw_lines(img, hi, dashed=(hi == 1))
+        self._draw_legend(img, num_hands)
         return img
 
-    def _draw_header(self, img):
+    def _draw_header(self, img, num_hands):
         draw_filled_rect(img, (0, 0), (self.width, 34), COLORS["bg_secondary"])
         draw_divider(img, 34, 0, self.width, COLORS["border"])
         cv2.putText(img, "Radius Over Time", (self.margin_left, 23),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, COLORS["text_primary"], 1, cv2.LINE_AA)
-        cv2.putText(img, "px", (self.width - 30, 23),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLORS["text_tertiary"], 1, cv2.LINE_AA)
+        hands_txt = f"{num_hands} hand{'s' if num_hands != 1 else ''}"
+        cv2.putText(img, hands_txt, (self.width - 80, 23),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.3, COLORS["text_tertiary"], 1, cv2.LINE_AA)
 
     def _draw_plot_area(self, img):
         cv2.rectangle(img, (self.margin_left, self.margin_top),
@@ -84,35 +97,70 @@ class GraphVisualizer:
             cv2.putText(img, f"{int(val)}", (6, y + 4),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.3, COLORS["text_tertiary"], 1, cv2.LINE_AA)
 
-    def _draw_lines(self, img):
+    def _draw_lines(self, img, hand_idx, dashed=False):
+        buffers = self.hand_buffers[hand_idx]
         for pair_idx, name in enumerate(self.pair_names):
-            buf = self.buffers[name]
+            buf = buffers[name]
             if len(buf) < 2:
                 continue
             color = COLORS[FINGER_KEYS[pair_idx]]
+            # Slightly alter color for second hand
+            if hand_idx == 1:
+                color = tuple(max(0, min(255, c + 40)) for c in color)
             total = len(buf)
             pts = [(self._idx_to_x(i, total), self._val_to_y(v)) for i, v in enumerate(buf)]
-            pts_np = np.array(pts, dtype=np.int32).reshape((-1, 1, 2))
-            cv2.polylines(img, [pts_np], False, color, 2, cv2.LINE_AA)
+
+            if dashed:
+                # Dashed polyline for hand 2
+                for i in range(0, len(pts) - 1, 2):
+                    end = min(i + 1, len(pts) - 1)
+                    cv2.line(img, pts[i], pts[end], color, 2, cv2.LINE_AA)
+            else:
+                pts_np = np.array(pts, dtype=np.int32).reshape((-1, 1, 2))
+                cv2.polylines(img, [pts_np], False, color, 2, cv2.LINE_AA)
+
             if pts:
                 last = pts[-1]
                 cv2.circle(img, last, 4, color, 1, cv2.LINE_AA)
                 cv2.circle(img, last, 2, color, -1, cv2.LINE_AA)
                 val = list(buf)[-1]
-                cv2.putText(img, f"{val:.0f}", (last[0] + 6, last[1] - 4),
+                label_x = last[0] + 6 if hand_idx == 0 else last[0] - 30
+                cv2.putText(img, f"{val:.0f}", (label_x, last[1] - 4),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.28, color, 1, cv2.LINE_AA)
 
-    def _draw_legend(self, img):
+    def _draw_legend(self, img, num_hands):
         draw_filled_rect(img, (0, self.height - 28), (self.width, self.height),
                          COLORS["bg_secondary"])
         draw_divider(img, self.height - 28, 0, self.width, COLORS["border"])
-        spacing = self.plot_w // max(len(self.pair_names), 1)
-        y_pos = self.height - 10
-        for i, name in enumerate(self.pair_names):
-            color = COLORS[FINGER_KEYS[i]]
-            x = self.margin_left + i * spacing
-            cv2.line(img, (x, y_pos), (x + 14, y_pos), color, 2, cv2.LINE_AA)
-            cv2.circle(img, (x + 7, y_pos), 2, color, -1, cv2.LINE_AA)
-            parts = name.split("-")
-            cv2.putText(img, f"{parts[0][:3]}-{parts[1][:3]}", (x + 18, y_pos + 4),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.3, COLORS["text_secondary"], 1, cv2.LINE_AA)
+
+        if num_hands <= 1:
+            spacing = self.plot_w // max(len(self.pair_names), 1)
+            y_pos = self.height - 10
+            for i, name in enumerate(self.pair_names):
+                color = COLORS[FINGER_KEYS[i]]
+                x = self.margin_left + i * spacing
+                cv2.line(img, (x, y_pos), (x + 14, y_pos), color, 2, cv2.LINE_AA)
+                cv2.circle(img, (x + 7, y_pos), 2, color, -1, cv2.LINE_AA)
+                parts = name.split("-")
+                cv2.putText(img, f"{parts[0][:3]}-{parts[1][:3]}", (x + 18, y_pos + 4),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.3, COLORS["text_secondary"], 1, cv2.LINE_AA)
+        else:
+            # Show hand labels in legend
+            y_pos = self.height - 10
+            x = self.margin_left
+            # Hand 1: solid
+            cv2.line(img, (x, y_pos), (x + 20, y_pos), COLORS["accent"], 2, cv2.LINE_AA)
+            cv2.putText(img, f"{self.hand_labels[0]} (solid)", (x + 24, y_pos + 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.28, COLORS["text_secondary"], 1, cv2.LINE_AA)
+            # Hand 2: dashed
+            x2 = x + 160
+            for dx in range(0, 20, 6):
+                cv2.line(img, (x2 + dx, y_pos), (x2 + dx + 3, y_pos),
+                         COLORS["info"], 2, cv2.LINE_AA)
+            cv2.putText(img, f"{self.hand_labels[1]} (dashed)", (x2 + 24, y_pos + 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.28, COLORS["text_secondary"], 1, cv2.LINE_AA)
+
+    def reset(self):
+        for hi in range(2):
+            for name in self.pair_names:
+                self.hand_buffers[hi][name].clear()

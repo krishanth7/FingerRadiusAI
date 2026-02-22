@@ -13,7 +13,7 @@
 
 **FingerRadiusAI** is a professional Python computer vision application that detects hand landmarks in real-time using Google's MediaPipe Tasks API, computes finger radius values (Euclidean distances between fingertips), and renders a live scrolling graph alongside a corporate-styled dashboard overlay.
 
-The system tracks all **21 hand landmarks**, calculates distances between adjacent fingertip pairs and wrist-to-tip pairs, classifies hand gestures (Open / Closed / Pinch / Partial), and displays everything in a sleek, professional analytics dashboard.
+The system supports **simultaneous two-hand tracking**, monitoring all **21 landmarks per hand**, calculating distances between adjacent fingertip pairs and wrist-to-tip pairs, classifying hand gestures (Open / Closed / Pinch / Partial), and displaying everything in a sleek, professional analytics dashboard.
 
 ---
 
@@ -42,6 +42,8 @@ The system tracks all **21 hand landmarks**, calculates distances between adjace
 - ✅ One-key CSV export
 - ✅ Motion history trails on fingertips
 - ✅ Hand status badge overlay
+- ✅ Multi-hand support — Track and display radii for both hands simultaneously
+- ✅ Left / Right hand labeling with per-hand status
 - ✅ Professional corporate dashboard UI
 - ✅ Side analytics panel with live stats, radius bars, and controls
 
@@ -142,27 +144,28 @@ python main.py
 Camera Frame
      │
      ▼
- HandTracker           ←  MediaPipe Tasks API  (detection + EMA smoothing)
+ HandTracker (2 hands)  ←  MediaPipe Tasks API  (detection + per-hand EMA)
      │
-     ├──▶ landmarks (21 points)
-     │
-     ▼
- RadiusCalculator      ←  Euclidean distances + hand classification
-     │
-     ├──▶ pair_radii, wrist_radii, hand_status
+     ├──▶ Hand 0 landmarks (21 pts) + label (Left/Right)
+     ├──▶ Hand 1 landmarks (21 pts) + label (Left/Right)
      │
      ▼
- GraphVisualizer       ←  OpenCV-rendered scrolling chart
+ RadiusCalculator ×2    ←  Per-hand Euclidean distances + classification
+     │
+     ├──▶ pair_radii, wrist_radii, status  (per hand)
      │
      ▼
- Composite Display     ←  Analytics Panel + Video Feed + Graph
+ GraphVisualizer        ←  Solid lines (Hand 1) + Dashed lines (Hand 2)
+     │
+     ▼
+ Composite Display      ←  Analytics Panel + Video Feed + Graph
 ```
 
 ---
 
 ## 🔮 Future Improvements
 
-- [ ] **Multi-hand support** — Track and display radii for both hands simultaneously
+- [x] **Multi-hand support** — Track and display radii for both hands simultaneously
 - [ ] **3D radius** — Use MediaPipe z-coordinates for depth-aware distance
 - [ ] **Gesture library** — Recognize more gestures (peace, thumbs-up, OK, pointing)
 - [ ] **PyQt / Tkinter GUI** — Windowed UI with settings panel and playback controls

@@ -1,14 +1,10 @@
 """
 main.py - FingerRadiusAI Entry Point
-Professional Corporate Dashboard for Hand Finger Radius Tracking
+Multi-hand Professional Dashboard for Hand Finger Radius Tracking
 
 Controls:
-    Q / ESC  - Quit
-    E        - Export data to CSV
-    R        - Reset buffers
-    T        - Toggle trails
-    G        - Toggle graph
-    S        - Screenshot
+    Q / ESC  - Quit       E - Export CSV      R - Reset
+    T        - Trails     G - Toggle graph    S - Screenshot
 """
 
 import sys
@@ -20,11 +16,10 @@ from src.hand_tracker import HandTracker
 from src.radius_calculator import RadiusCalculator
 from src.graph_visualizer import GraphVisualizer
 from src.utils import (
-    FPSCounter, CSVExporter,
-    COLORS, FINGER_KEYS,
+    FPSCounter, CSVExporter, COLORS, FINGER_KEYS,
     draw_label, draw_hud_frame, draw_top_bar,
     draw_filled_rect, draw_divider, draw_progress_bar,
-    draw_heading, draw_caption, draw_status_badge,
+    draw_status_badge,
 )
 
 CAMERA_INDEX = 0
@@ -34,110 +29,117 @@ WINDOW_NAME = "FingerRadiusAI"
 PANEL_WIDTH = 260
 
 
-def create_panel(panel_h, fps, hand_status, frame_count,
-                 pair_radii, show_trails, show_graph):
-    """Create the professional side panel."""
-    pw = PANEL_WIDTH
-    p = np.full((panel_h, pw, 3), COLORS["bg_secondary"], dtype=np.uint8)
+def _draw_hand_section(p, y, pw, hand_label, hand_status, pair_radii, hand_idx):
+    """Draw a radius metrics section for one hand on the panel."""
+    # Hand header
+    label_color = COLORS["accent"] if hand_idx == 0 else COLORS["info"]
+    cv2.putText(p, f"{hand_label.upper()} HAND", (16, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, label_color, 1, cv2.LINE_AA)
 
-    # ── Header ──
-    draw_filled_rect(p, (0, 0), (pw, 50), COLORS["bg_primary"])
-    cv2.putText(p, "FingerRadius", (16, 24),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLORS["accent"], 1, cv2.LINE_AA)
-    cv2.putText(p, "AI", (142, 24),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLORS["text_primary"], 1, cv2.LINE_AA)
-    cv2.putText(p, "Hand Tracking Analytics", (16, 42),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.3, COLORS["text_tertiary"], 1, cv2.LINE_AA)
-    draw_divider(p, 50, 0, pw, COLORS["border"])
-
-    y = 70
-
-    # ── System Metrics Section ──
-    cv2.putText(p, "SYSTEM", (16, y),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLORS["text_tertiary"], 1, cv2.LINE_AA)
-    y += 6
-    draw_divider(p, y, 16, pw - 16, COLORS["divider"])
-    y += 20
-
-    # FPS
-    fps_color = COLORS["success"] if fps >= 20 else COLORS["warning"]
-    cv2.circle(p, (22, y - 4), 4, fps_color, -1, cv2.LINE_AA)
-    cv2.putText(p, "FPS", (32, y),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLORS["text_label"], 1, cv2.LINE_AA)
-    cv2.putText(p, f"{fps:.1f}", (pw - 60, y),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.45, fps_color, 1, cv2.LINE_AA)
-    y += 22
-
-    # Frame
-    cv2.putText(p, "Frame", (32, y),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLORS["text_label"], 1, cv2.LINE_AA)
-    cv2.putText(p, f"{frame_count}", (pw - 70, y),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLORS["text_secondary"], 1, cv2.LINE_AA)
-    y += 22
-
-    # Status
+    # Status inline
     status_colors = {
         "Open": COLORS["success"], "Closed": COLORS["warning"],
         "Pinch": COLORS["thumb"], "Partial": COLORS["text_secondary"],
         "N/A": COLORS["text_tertiary"],
     }
     sc = status_colors.get(hand_status, COLORS["text_secondary"])
-    cv2.putText(p, "Status", (32, y),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLORS["text_label"], 1, cv2.LINE_AA)
-    # Status badge
-    cv2.putText(p, hand_status.upper(), (pw - 80, y),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.4, sc, 1, cv2.LINE_AA)
-    y += 30
-
-    # ── Radius Metrics Section ──
-    cv2.putText(p, "RADIUS METRICS", (16, y),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLORS["text_tertiary"], 1, cv2.LINE_AA)
+    cv2.putText(p, hand_status.upper(), (pw - 75, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, sc, 1, cv2.LINE_AA)
     y += 6
     draw_divider(p, y, 16, pw - 16, COLORS["divider"])
-    y += 16
+    y += 14
 
     pair_names = ["Thumb-Index", "Index-Middle", "Middle-Ring", "Ring-Pinky"]
     for i, name in enumerate(pair_names):
         color = COLORS[FINGER_KEYS[i]]
         val = pair_radii.get(name, 0)
-
-        # Color indicator dot
-        cv2.circle(p, (22, y), 4, color, -1, cv2.LINE_AA)
-
-        # Label
+        cv2.circle(p, (22, y), 3, color, -1, cv2.LINE_AA)
         parts = name.split("-")
-        label = f"{parts[0][:3]}-{parts[1][:3]}"
-        cv2.putText(p, label, (32, y + 4),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLORS["text_secondary"], 1, cv2.LINE_AA)
+        cv2.putText(p, f"{parts[0][:3]}-{parts[1][:3]}", (30, y + 3),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.3, COLORS["text_secondary"], 1, cv2.LINE_AA)
+        cv2.putText(p, f"{val:.0f}", (pw - 50, y + 3),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.3, COLORS["text_primary"], 1, cv2.LINE_AA)
+        y += 8
+        draw_progress_bar(p, (22, y), pw - 44, 4, val, 300, color, border=False)
+        y += 14
+    return y
 
-        # Value
-        cv2.putText(p, f"{val:.0f} px", (pw - 65, y + 4),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLORS["text_primary"], 1, cv2.LINE_AA)
-        y += 10
 
-        # Progress bar
-        draw_progress_bar(p, (22, y), pw - 44, 5, val, 300, color, border=False)
-        y += 20
+def create_panel(panel_h, fps, frame_count, num_hands,
+                 hand_data, show_trails, show_graph):
+    """Create the professional side panel supporting multi-hand display."""
+    pw = PANEL_WIDTH
+    p = np.full((panel_h, pw, 3), COLORS["bg_secondary"], dtype=np.uint8)
 
-    y += 10
+    # Header
+    draw_filled_rect(p, (0, 0), (pw, 50), COLORS["bg_primary"])
+    cv2.putText(p, "FingerRadius", (16, 24),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLORS["accent"], 1, cv2.LINE_AA)
+    cv2.putText(p, "AI", (142, 24),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLORS["text_primary"], 1, cv2.LINE_AA)
+    cv2.putText(p, "Multi-Hand Analytics", (16, 42),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.3, COLORS["text_tertiary"], 1, cv2.LINE_AA)
+    draw_divider(p, 50, 0, pw, COLORS["border"])
 
-    # ── Controls Section ──
-    cv2.putText(p, "CONTROLS", (16, y),
+    y = 68
+
+    # System
+    cv2.putText(p, "SYSTEM", (16, y),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLORS["text_tertiary"], 1, cv2.LINE_AA)
     y += 6
     draw_divider(p, y, 16, pw - 16, COLORS["divider"])
     y += 18
 
+    fps_color = COLORS["success"] if fps >= 20 else COLORS["warning"]
+    cv2.circle(p, (22, y - 4), 4, fps_color, -1, cv2.LINE_AA)
+    cv2.putText(p, "FPS", (32, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLORS["text_label"], 1, cv2.LINE_AA)
+    cv2.putText(p, f"{fps:.1f}", (pw - 60, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, fps_color, 1, cv2.LINE_AA)
+    y += 20
+
+    cv2.putText(p, "Hands", (32, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLORS["text_label"], 1, cv2.LINE_AA)
+    h_color = COLORS["success"] if num_hands > 0 else COLORS["text_tertiary"]
+    cv2.putText(p, f"{num_hands}", (pw - 50, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, h_color, 1, cv2.LINE_AA)
+    y += 20
+
+    cv2.putText(p, "Frame", (32, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLORS["text_label"], 1, cv2.LINE_AA)
+    cv2.putText(p, f"{frame_count}", (pw - 70, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLORS["text_secondary"], 1, cv2.LINE_AA)
+    y += 24
+
+    # Hand sections
+    for hi in range(min(num_hands, 2)):
+        hd = hand_data[hi]
+        y = _draw_hand_section(p, y, pw, hd["label"], hd["status"],
+                               hd["pair_radii"], hi)
+        y += 6
+
+    if num_hands == 0:
+        cv2.putText(p, "NO HANDS DETECTED", (16, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLORS["text_tertiary"], 1, cv2.LINE_AA)
+        y += 6
+        draw_divider(p, y, 16, pw - 16, COLORS["divider"])
+        y += 20
+
+    # Controls
+    y = max(y, panel_h - 160)
+    cv2.putText(p, "CONTROLS", (16, y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLORS["text_tertiary"], 1, cv2.LINE_AA)
+    y += 6
+    draw_divider(p, y, 16, pw - 16, COLORS["divider"])
+    y += 16
+
     controls = [
-        ("Q", "Quit"),
-        ("E", "Export CSV"),
-        ("R", "Reset"),
+        ("Q", "Quit"), ("E", "Export CSV"), ("R", "Reset"),
         ("T", f"Trails {'ON' if show_trails else 'OFF'}"),
         ("G", f"Graph {'ON' if show_graph else 'OFF'}"),
         ("S", "Screenshot"),
     ]
     for key, desc in controls:
-        # Key badge
         kw = 18
         draw_filled_rect(p, (20, y - 11), (20 + kw, y + 3), COLORS["bg_primary"])
         cv2.rectangle(p, (20, y - 11), (20 + kw, y + 3), COLORS["border"], 1)
@@ -145,14 +147,12 @@ def create_panel(panel_h, fps, hand_status, frame_count,
                     cv2.FONT_HERSHEY_SIMPLEX, 0.32, COLORS["text_primary"], 1, cv2.LINE_AA)
         cv2.putText(p, desc, (46, y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.33, COLORS["text_tertiary"], 1, cv2.LINE_AA)
-        y += 20
+        y += 18
 
-    # ── Footer ──
+    # Footer
     draw_divider(p, panel_h - 25, 0, pw, COLORS["border"])
-    cv2.putText(p, "v1.0  |  FingerRadiusAI", (16, panel_h - 8),
+    cv2.putText(p, "v2.0  |  FingerRadiusAI", (16, panel_h - 8),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.28, COLORS["text_tertiary"], 1, cv2.LINE_AA)
-
-    # Right border
     cv2.line(p, (pw - 1, 0), (pw - 1, panel_h), COLORS["border"], 1)
 
     return p
@@ -160,7 +160,7 @@ def create_panel(panel_h, fps, hand_status, frame_count,
 
 def main():
     print("=" * 50)
-    print("  FingerRadiusAI - Professional Hand Tracker")
+    print("  FingerRadiusAI - Multi-Hand Tracker v2.0")
     print("=" * 50)
     print("Starting camera...")
 
@@ -172,10 +172,11 @@ def main():
         print("[ERROR] Cannot open camera.")
         sys.exit(1)
 
-    tracker = HandTracker(max_num_hands=1, min_detection_confidence=0.7,
+    tracker = HandTracker(max_num_hands=2, min_detection_confidence=0.7,
                           min_tracking_confidence=0.6, trail_length=15,
                           smoothing_alpha=0.4)
-    calculator = RadiusCalculator(smoothing_alpha=0.35)
+    # One calculator per hand
+    calculators = [RadiusCalculator(smoothing_alpha=0.35) for _ in range(2)]
     graph_viz = GraphVisualizer(width=500, height=260, max_points=200,
                                 y_range=(0, 300))
     fps_counter = FPSCounter(window=30)
@@ -184,11 +185,8 @@ def main():
     frame_count = 0
     show_trails = True
     show_graph = True
-    hand_status = "N/A"
-    pair_radii = {}
-    wrist_radii = {}
 
-    print("Camera ready. Press Q or ESC to quit.\n")
+    print("Camera ready. Show 1 or 2 hands! Press Q or ESC to quit.\n")
 
     while True:
         ret, frame = cap.read()
@@ -199,46 +197,69 @@ def main():
         fps_counter.tick()
         frame_count += 1
 
-        # Hand detection
-        landmarks = tracker.process(frame)
+        # Multi-hand detection
+        num_hands = tracker.process(frame)
 
-        if landmarks is not None:
-            pair_radii, wrist_radii, hand_status = calculator.compute(landmarks)
-            graph_viz.update(pair_radii)
-            csv_exporter.record(pair_radii, hand_status)
+        # Compute radii for each hand
+        hand_data = []
+        for hi in range(num_hands):
+            lm = tracker.get_landmarks(hi)
+            if lm is not None:
+                pr, wr, status = calculators[hi].compute(lm)
+                label = tracker.get_label(hi)
+                graph_viz.update(pr, hand_idx=hi, label=label)
+                csv_exporter.record(
+                    {f"{label}_{k}": v for k, v in pr.items()},
+                    f"{label}:{status}"
+                )
+                hand_data.append({
+                    "label": label, "status": status,
+                    "pair_radii": pr, "wrist_radii": wr,
+                    "landmarks": lm,
+                })
 
-            tracker.draw_skeleton(frame)
-            calculator.draw_radii(frame, landmarks, pair_radii, wrist_radii)
-            if show_trails:
-                tracker.draw_trails(frame)
-        else:
-            hand_status = "N/A"
+        # Draw all hands
+        tracker.draw_all(frame, show_trails)
+        for hi, hd in enumerate(hand_data):
+            calculators[hi].draw_radii(frame, hd["landmarks"],
+                                        hd["pair_radii"], hd["wrist_radii"])
 
         fps = fps_counter.fps
 
-        # Professional overlays on video
+        # Overlays
         draw_hud_frame(frame)
         draw_top_bar(frame, fps, frame_count)
-        calculator.draw_status(frame, hand_status, position=(15, 60))
 
-        # Build composite: Panel | Video | Graph
-        graph_h = 260 if show_graph else 0
-        total_h = CAMERA_HEIGHT + graph_h
+        # Status badges for each hand
+        for hi, hd in enumerate(hand_data):
+            y_pos = 55 + hi * 28
+            label_color = COLORS["accent"] if hi == 0 else COLORS["info"]
+            status_colors = {
+                "Open": COLORS["success"], "Closed": COLORS["warning"],
+                "Pinch": COLORS["thumb"], "Partial": COLORS["text_secondary"],
+            }
+            sc = status_colors.get(hd["status"], COLORS["text_secondary"])
+            draw_status_badge(frame,
+                              f"{hd['label'].upper()}: {hd['status'].upper()}",
+                              (15, y_pos), sc)
 
+        if num_hands == 0:
+            draw_status_badge(frame, "NO HANDS", (15, 55), COLORS["text_tertiary"])
+
+        # Composite
         if show_graph:
-            graph_img = graph_viz.render()
-            graph_img = cv2.resize(graph_img, (CAMERA_WIDTH, graph_h))
+            graph_img = graph_viz.render(num_hands=num_hands)
+            graph_img = cv2.resize(graph_img, (CAMERA_WIDTH, 260))
             video_col = np.vstack([frame, graph_img])
         else:
             video_col = frame
 
-        panel = create_panel(video_col.shape[0], fps, hand_status,
-                             frame_count, pair_radii, show_trails, show_graph)
+        panel = create_panel(video_col.shape[0], fps, frame_count,
+                             num_hands, hand_data, show_trails, show_graph)
         composite = np.hstack([panel, video_col])
 
         cv2.imshow(WINDOW_NAME, composite)
 
-        # Keyboard
         key = cv2.waitKey(1) & 0xFF
         if key in (ord('q'), 27):
             print("\nShutting down...")
