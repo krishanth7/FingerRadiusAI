@@ -143,7 +143,7 @@ class DashboardBuilder:
                 "Distribution per measurement",
                 "Frames per gesture",
             ),
-            vertical_spacing=0.14,
+            vertical_spacing=0.16,
             row_heights=[0.55, 0.45],
         )
 
@@ -179,21 +179,25 @@ class DashboardBuilder:
         duration = max(self.timestamps) if self.timestamps else 0.0
         fig.update_layout(
             title=dict(
+                # A literal middle dot, not the HTML entity: Plotly's title
+                # renderer does not decode entities and shows "&middot;" as
+                # text. Confirmed by rendering the output in a browser.
                 text=(
                     f"{self.title}<br>"
                     f"<span style='font-size:13px;color:#8a929e'>"
-                    f"{len(self.rows)} frames &middot; {duration:.1f}s &middot; "
+                    f"{len(self.rows)} frames \u00b7 {duration:.1f}s \u00b7 "
                     f"{len(self.series)} measurements</span>"
                 ),
-                x=0.5, xanchor="center",
+                x=0.5, xanchor="center", y=0.975, yanchor="top",
             ),
             template="plotly_dark",
             paper_bgcolor="#191a1e",
             plot_bgcolor="#212328",
             font=dict(family="Menlo, Consolas, monospace", size=12),
             hovermode="x unified",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
-            margin=dict(l=60, r=30, t=110, b=50),
+            legend=dict(orientation="h", yanchor="bottom", y=1.005, x=0,
+                        font=dict(size=11)),
+            margin=dict(l=60, r=30, t=150, b=50),
             height=860,
         )
         fig.update_xaxes(title_text="seconds", row=1, col=1, gridcolor="#2e3138")

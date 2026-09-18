@@ -179,94 +179,210 @@ Run `python main.py --help` for the full list.
 
 ---
 
-## 🆕 What v3.0 adds
+## 🆕 What v3.0 adds — with real output
+
+> Every image below is produced by `python docs/make_examples.py`, which
+> imports the same modules the application uses and runs them. Nothing is a
+> mockup. The hand poses come from `tests/synthetic_hands.py` because CI has
+> no camera; the recognition, filtering, radius maths and drawing are all the
+> production code.
+
+---
 
 ### Gesture library
-Eight static gestures from the 21 landmarks, with no model file and no
-training data. Every threshold is a **ratio** rather than a pixel count, so a
-hand near the camera and one far away classify identically, and extension is
-measured from the wrist rather than by comparing y coordinates — which is what
-lets a gesture still be recognised with the hand rotated.
+
+Eight static gestures from the 21 landmarks — no model file, no training data.
+
+![Gesture library](docs/examples/gestures.png)
+
+*Each label and confidence in that grid is the recogniser's own verdict on the
+pose beside it, not a caption.* The `fingers` line is its extension bitmask,
+thumb first.
 
 ```python
 from src.gestures import GestureRecognizer
-recognizer = GestureRecognizer(hold_frames=3)
-result = recognizer.update(landmarks)
-print(result.gesture, result.confidence, result.fingers)
+from tests.synthetic_hands import peace, ok_sign, fist
+
+recognizer = GestureRecognizer(hold_frames=1)
+for name, builder in [("peace", peace), ("ok_sign", ok_sign), ("fist", fist)]:
+    result = recognizer.classify(builder())
+    print(f"{name:9} -> {result.gesture:11} {result.confidence:.0%}  {result.fingers}")
 ```
+
+Real output:
+
+```
+peace     -> Peace       95%  {'thumb': False, 'index': True, 'middle': True, 'ring': False, 'pinky': False}
+ok_sign   -> OK          95%  {'thumb': True, 'index': True, 'middle': True, 'ring': True, 'pinky': True}
+fist      -> Fist        95%  {'thumb': False, 'index': False, 'middle': False, 'ring': False, 'pinky': False}
+```
+
+Every threshold is a **ratio**, not a pixel count, so a hand near the camera
+and one far away classify identically; extension is measured from the wrist
+rather than by comparing y coordinates, which is what keeps recognition
+working with the hand rotated. Both properties are regression-tested across
+eight rotations and four hand sizes.
 
 Two cases the obvious implementation gets wrong, and this one handles:
-a **closed fist** is not a pinch (the curled index tip does sit beside the
-tucked thumb, so the index must be extended), and **OK** outranks pinch
-(both touch thumb to index; the other three fingers decide).
+
+| Case | Why the naive version fails | Fix |
+|---|---|---|
+| **Fist ≠ pinch** | In a fist the curled index tip really does come to rest beside the tucked thumb, so a pure distance test calls it a pinch | A pinch also requires an **extended index** |
+| **OK beats pinch** | Both put thumb and index together | The other three fingers decide |
+
+---
 
 ### Kalman smoothing
-An EMA buys smoothness with lag and has one dial, `alpha`, that cannot give
-you both. A constant-velocity Kalman filter carries position *and* velocity,
-so it leans on prediction while the hand moves steadily and snaps back when it
-changes direction. Measured against the shipped EMA, one fixed setting each:
 
-| signal          | raw RMSE | EMA α=0.35 | Kalman | improvement |
-|-----------------|---------:|-----------:|-------:|------------:|
-| smooth sine     |    7.599 |      4.831 |  3.694 |      23.5 % |
-| move-and-hold   |    7.599 |      3.885 |  3.228 |      16.9 % |
-| drift + tremor  |    7.599 |      3.710 |  3.675 |       1.0 % |
-| **mean**        |          |  **4.142** | **3.532** | **14.7 %** |
+![Kalman vs EMA](docs/examples/kalman_vs_ema.png)
 
-Reproduce with `pytest tests/test_features.py -k kalman`. Toggle live with `K`.
-An EMA re-tuned per signal can still beat a single fixed Kalman on the
-smoothest of them — the gain here is not having to pick `alpha` at all.
+*Both filters run on the same noisy signal; the RMSE values in the legend are
+computed from that run.* Watch the step at frame 120 — the Kalman filter
+carries velocity, so it crosses the ramp without the overshoot the EMA shows
+settling at the top.
 
-### Video file input
+Measured across three signals, one fixed setting each:
+
+| signal | raw RMSE | EMA α=0.35 | Kalman | improvement |
+|---|---:|---:|---:|---:|
+| smooth sine | 7.599 | 4.831 | 3.694 | 23.5 % |
+| move-and-hold | 7.599 | 3.885 | 3.228 | 16.9 % |
+| drift + tremor | 7.599 | 3.710 | 3.675 | 1.0 % |
+| **mean** | | **4.142** | **3.532** | **14.7 %** |
+
+Reproduce: `pytest tests/test_features.py -k kalman`. Toggle live with `K`.
+
+**The honest caveat:** an EMA *re-tuned for each signal individually* can still
+beat a single fixed Kalman on the smoothest of them. The gain here is not
+having to pick `alpha` at all.
+
+---
+
+### Custom themes
+
+![Themes](docs/examples/themes.png)
+
+*The same frame drawn four times — identical landmarks, identical drawing
+code, only `apply_theme()` between them.*
+
 ```bash
-python main.py --source clip.mp4          # loops, paced to the file's fps
-python main.py --source clip.mp4 --fast --no-loop --export-dashboard out.html
+python main.py --theme cyberpunk     # or corporate | minimal | retro
 ```
-Pause with `P`, seek with the arrow keys, step one frame at a time. A file has
-a length, a position and a frame rate; a camera has none of those, so the
-seek methods return `False` on a camera rather than pretending to work.
+
+Press `C` to cycle live. Themes mutate the shared `COLORS` dict **in place**,
+because every module imports it by name — rebinding would leave them all on
+the old palette.
+
+---
 
 ### Audio feedback
-Radius maps to pitch, so opening your hand raises the note. The mapping is
-**geometric, not linear** — equal steps in radius give equal musical
-intervals, because that is how pitch is heard. Notes snap to a scale
-(`--scale pentatonic|major|minor|blues|chromatic|none`) so a moving hand
-sounds musical rather than like a siren.
+
+![Audio mapping](docs/examples/audio_mapping.png)
+
+*Top: the actual mapping curve. Bottom: the waveform of
+`docs/examples/example_session.wav`, read back from the file on disk.*
+
+```python
+from src.audio_feedback import ToneMapper
+mapper = ToneMapper(scale="pentatonic")
+for radius in (0, 60, 120, 180, 240, 300):
+    print(f"radius {radius:3d}px -> {mapper.frequency(radius):6.1f} Hz  ({mapper.note_name(radius)})")
+```
+
+Real output:
+
+```
+radius   0px ->  220.0 Hz  (A3)
+radius  60px ->  277.2 Hz  (C#4)
+radius 120px ->  370.0 Hz  (F#4)
+radius 180px ->  493.9 Hz  (B4)
+radius 240px ->  659.3 Hz  (E5)
+radius 300px ->  880.0 Hz  (A5)
+```
+
+The mapping is **geometric, not linear** — 0→150px is one octave and
+150→300px is the next, because that is how pitch is heard. A linear Hz map
+sounds like it does nothing at the top of the range and lurches at the bottom.
+
+```bash
+python main.py --audio --scale blues
+```
 
 With no sound card the feature still works: it maps and records, and
 `render_wav()` writes a file you can play afterwards. A missing audio device
 never interrupts tracking.
 
-### Plotly dashboard
-Press `H`, or `--export-dashboard report.html`. Time series, per-measurement
-distributions and a gesture histogram, with Plotly **inlined** — the file
-opens offline and makes no network request.
+---
 
-### Themes
-`--theme corporate|cyberpunk|minimal|retro`, or `C` to cycle live. Themes
-mutate the shared `COLORS` dict in place, because every module imports it by
-name and rebinding it would leave them all on the old palette.
+### Plotly dashboard
+
+![Dashboard](docs/examples/dashboard.png)
+
+*A real report, rendered in a browser.* To get the interactive version —
+hover, zoom, toggle series — run `python docs/make_examples.py`, which writes
+`docs/examples/sample_dashboard.html`.
+
+That file is deliberately **not** committed: Plotly is inlined, so it is
+4.7 MB, and it embeds a random element id that changes on every build. Keeping
+it in git would mean a 4.7 MB diff every time anyone regenerated the figures.
+
+```bash
+python main.py --source clip.mp4 --export-dashboard report.html
+```
+or press `H` at any time. Plotly is **inlined**, so the file opens offline and
+makes no network request — verified by counting external script tags in the
+output, which is zero.
+
+---
+
+### Video file input
+
+```bash
+python main.py --source clip.mp4                      # loops, paced to the file's fps
+python main.py --source clip.mp4 --fast --no-loop     # process as fast as possible
+```
+
+| Key | Action |
+|---|---|
+| `P` | Pause / resume |
+| `←` `→` | Seek 5 seconds |
+
+A file has a length, a position and a frame rate; a camera has none of those.
+Rather than pretend otherwise, the seek methods **return `False` on a camera**
+instead of silently doing nothing.
+
+---
 
 ### ONNX Runtime backend
+
 ```bash
 python main.py --list-providers
-python main.py --onnx-model your_hands.onnx
+```
+
+Real output from this machine:
+
+```
+ONNX Runtime 1.30.0, CPU only: CPUExecutionProvider, AzureExecutionProvider
 ```
 
 Three things stated plainly, because "GPU acceleration" is easy to overclaim:
 
 1. **No ONNX model ships with this repository.** MediaPipe's
    `hand_landmarker.task` is a bundle of TFLite graphs, not an ONNX file, and
-   it cannot be renamed into one. Supply your own exported model.
+   cannot be renamed into one. Supply your own with `--onnx-model`.
 2. **MediaPipe remains the default** and is not slower for this existing.
 3. **A GPU provider is not automatically faster.** On short sequences the
    host-to-device copy can cost more than the inference saves — hence the
-   built-in benchmark. Measure on your hardware.
+   built-in benchmark. Measure on your own hardware.
+
+---
 
 ### Tkinter GUI
+
 ```bash
 python main.py --gui
 ```
+
 Tkinter rather than PyQt on purpose: it is in the standard library, so the GUI
 adds no dependency to a project whose appeal is that it installs in one line.
 Some Python builds omit Tkinter; the error message says how to install it for
@@ -328,6 +444,13 @@ pip install pytest
 pytest -q
 ```
 
+```
+$ pytest -q
+........................................................................ [ 88%]
+.........                                                                [100%]
+81 passed in 3.99s
+```
+
 81 tests, about 4 seconds, **no camera, no display and no GPU required**.
 Gesture recognition is checked against synthetic landmark sets built in
 `tests/synthetic_hands.py`, and `tests/test_pipeline.py` generates a video file
@@ -337,6 +460,15 @@ gestures, CSV, dashboard and audio export.
 **What the tests do not prove:** landmark accuracy on a real hand. That needs a
 camera and a person, and no synthetic clip substitutes for it. The suite proves
 the pipeline runs and the maths is right, not that MediaPipe finds your fingers.
+
+### Regenerating the README figures
+
+```bash
+python docs/make_examples.py
+```
+
+Rebuilds every image in this file from live code. If a number in the README
+and a number in the figure ever disagree, the figure is the one that ran.
 
 ---
 
