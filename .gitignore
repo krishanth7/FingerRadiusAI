@@ -32,3 +32,9 @@ dashboard.html
 session_audio.wav
 screenshot_*.png
 radius_data.csv
+
+# Generated example artefacts.
+# The PNGs and the WAV are committed: they are deterministic and the README
+# shows them. The Plotly HTML is not -- Plotly embeds a random id, so it is
+# 4.7 MB of churn on every regeneration. Run docs/make_examples.py for it.
+docs/examples/sample_dashboard.html
