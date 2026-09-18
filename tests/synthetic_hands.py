@@ -194,3 +194,68 @@ def pinch(**kw) -> List[Point]:
     return make_hand(
         {"thumb": True, "index": True, "middle": False, "ring": False, "pinky": False}, **kw
     )
+
+
+# ---------------------------------------------------------------- motion
+def moving_hand(frames, dx=0.0, dy=0.0, dz=0.0, *, start=(300, 400),
+                scale=90.0, pose=None, jitter=0.0, seed=0, path=None):
+    """Yield a sequence of hands travelling across the frame.
+
+    Args:
+        frames: How many frames to produce.
+        dx, dy: Pixels of travel per frame.
+        dz: Depth change per frame, applied to every landmark's z.
+        start: Where the wrist begins.
+        scale: Hand size in pixels.
+        pose: A builder from this module; open_palm by default.
+        jitter: Standard deviation of per-frame noise, in pixels, so a test
+            can check that recognition survives a shaky hand.
+        path: Optional callable ``f(i) -> (x, y, z)`` for a non-linear route,
+            used to build circles and taps.
+
+    Returns:
+        A list of ``(landmarks_2d, landmarks_3d)`` pairs.
+    """
+    import random
+
+    rng = random.Random(seed)
+    builder = pose or open_palm
+    out = []
+    for i in range(frames):
+        if path is not None:
+            ox, oy, oz = path(i)
+        else:
+            ox, oy, oz = dx * i, dy * i, dz * i
+        jx = rng.gauss(0.0, jitter) if jitter else 0.0
+        jy = rng.gauss(0.0, jitter) if jitter else 0.0
+        wrist = (int(start[0] + ox + jx), int(start[1] + oy + jy))
+        lm = builder(wrist=wrist, scale=scale)
+        lm3 = [(x, y, oz) for x, y in lm]
+        out.append((lm, lm3))
+    return out
+
+
+def circular_path(radius=140.0, turns=1.0, frames=20):
+    """A closure tracing a circle, for the circle-gesture test."""
+    import math
+
+    def path(i):
+        angle = 2.0 * math.pi * turns * (i / max(1, frames - 1))
+        return (radius * math.cos(angle) - radius, radius * math.sin(angle), 0.0)
+
+    return path
+
+
+def tap_path(depth=60.0, frames=12):
+    """A closure that dips toward the camera and returns.
+
+    MediaPipe's z is negative toward the camera, so a tap is a dip to
+    negative and back.
+    """
+    import math
+
+    def path(i):
+        t = i / max(1, frames - 1)
+        return (0.0, 0.0, -depth * math.sin(math.pi * t))
+
+    return path

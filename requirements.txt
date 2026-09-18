@@ -15,6 +15,9 @@ plotly>=5.18.0
 #   onnxruntime-gpu        NVIDIA CUDA
 #   onnxruntime-directml   Windows DirectML
 onnxruntime>=1.16.0
+# The bundled model runs on onnxruntime alone. The `onnx` package is only
+# needed to *write* a new one with tools/train_gesture_onnx.py:
+#   pip install onnx
 
 # Tkinter GUI (--gui) renders frames through Pillow.
 # Tkinter itself is in the standard library, but some builds omit it:
