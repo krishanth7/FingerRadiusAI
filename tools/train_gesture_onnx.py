@@ -194,8 +194,16 @@ class MLP:
 
 def export_onnx(model: MLP, labels: List[str], path: str) -> str:
     """Write the trained weights out as an ONNX graph."""
-    import onnx
-    from onnx import TensorProto, helper, numpy_helper
+    try:
+        import onnx
+        from onnx import TensorProto, helper, numpy_helper
+    except ImportError as exc:  # pragma: no cover - depends on the install
+        raise ImportError(
+            "Writing an ONNX graph needs the onnx package:\n"
+            "    pip install onnx\n"
+            "Running the bundled model does not -- that only needs "
+            "onnxruntime."
+        ) from exc
 
     nodes, initializers = [], []
     current = "landmarks"

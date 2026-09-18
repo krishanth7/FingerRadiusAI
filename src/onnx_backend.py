@@ -298,7 +298,6 @@ class OnnxGestureClassifier:
                 "Regenerate it with:  python tools/train_gesture_onnx.py"
             )
 
-        import onnx
         import onnxruntime as ort
 
         self.model_path = model_path
@@ -308,7 +307,12 @@ class OnnxGestureClassifier:
         self.active_providers: List[str] = list(self.session.get_providers())
         self.input_name = self.session.get_inputs()[0].name
 
-        meta = {entry.key: entry.value for entry in onnx.load(model_path).metadata_props}
+        # Read the labels through onnxruntime's own metadata view rather than
+        # onnx.load(). The two agree -- they read the same metadata_props --
+        # but onnxruntime is already a hard requirement here while the onnx
+        # package is only needed to *build* a model. Importing it for
+        # inference made a CPU-only install fail with ModuleNotFoundError.
+        meta = self.session.get_modelmeta().custom_metadata_map
         self.labels: List[str] = [
             label for label in meta.get("labels", "").split(",") if label
         ]

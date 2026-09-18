@@ -41,7 +41,10 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install flake8 pytest
+        # onnx is a *build* dependency, not a runtime one: the bundled model
+        # is loaded through onnxruntime alone, but writing a new graph in the
+        # retrain step below needs the onnx package.
+        pip install flake8 pytest onnx
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
     - name: Lint with flake8
