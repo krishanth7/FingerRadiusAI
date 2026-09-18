@@ -290,6 +290,31 @@ class TrainedGestureRecognizer:
         return path
 
     @classmethod
+    def open_for_recording(cls, path: str = "gestures.json") -> "TrainedGestureRecognizer":
+        """Return a recogniser to record into, loaded from ``path`` if it exists.
+
+        Recording writes the whole model back with :meth:`save`, so starting
+        from an empty recogniser would delete every gesture already in the
+        file the moment a new one was saved. Building a multi-gesture set
+        across sessions only works if each session starts from what the last
+        one left behind.
+
+        Raises:
+            ValueError: If ``path`` exists but cannot be read. Overwriting a
+                file we failed to understand would destroy it, so the caller
+                is told to stop rather than silently starting fresh.
+        """
+        if not os.path.exists(path):
+            return cls()
+        try:
+            return cls.load(path)
+        except Exception as error:
+            raise ValueError(
+                f"{path} exists but could not be read ({error}). Recording "
+                "into it would overwrite it, so nothing was opened."
+            ) from error
+
+    @classmethod
     def load(cls, path: str = "gestures.json") -> "TrainedGestureRecognizer":
         """Read a model back.
 

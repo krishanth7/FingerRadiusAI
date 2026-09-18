@@ -15,7 +15,11 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.dynamic_gestures import DynamicGesture, DynamicGestureRecognizer
+from src.dynamic_gestures import (
+    DynamicGesture,
+    DynamicGestureRecognizer,
+    retire_absent,
+)
 from src.gesture_trainer import (
     TrainedGestureRecognizer,
     describe_landmarks,
@@ -360,3 +364,105 @@ class TestBundledOnnxModel:
         poses = [hands.peace(), hands.fist(), hands.ok_sign()]
         batched, _ = classifier.classify_batch(poses)
         assert batched == [classifier.classify(p)[0] for p in poses]
+
+
+class TestRecordingDoesNotDestroyTheFile:
+    """Recording a second gesture must keep the first.
+
+    `save` writes the whole model, so a recorder that starts empty erases
+    everything already in the file. That is silent data loss: the CLI reports
+    a successful save while the previous gestures are gone.
+    """
+
+    def test_a_second_session_keeps_the_first_gesture(self, tmp_path):
+        path = str(tmp_path / "gestures.json")
+
+        first = TrainedGestureRecognizer()
+        first.record("wave", hands.open_palm())
+        first.finalise()
+        first.save(path)
+
+        second = TrainedGestureRecognizer.open_for_recording(path)
+        second.record("vee", hands.peace())
+        second.finalise()
+        second.save(path)
+
+        stored = TrainedGestureRecognizer.load(path)
+        assert set(stored.templates) == {"wave", "vee"}
+
+    def test_a_missing_file_starts_empty(self, tmp_path):
+        recorder = TrainedGestureRecognizer.open_for_recording(
+            str(tmp_path / "nothing-here.json")
+        )
+        assert recorder.templates == {}
+
+    def test_an_unreadable_file_is_never_overwritten(self, tmp_path):
+        path = tmp_path / "gestures.json"
+        path.write_text("{ this is not json")
+
+        with pytest.raises(ValueError):
+            TrainedGestureRecognizer.open_for_recording(str(path))
+
+        # The point of raising: the caller stops, so the file survives.
+        assert path.read_text() == "{ this is not json"
+
+
+class TestMotionHistoryIsClearedWhenAHandLeaves:
+    """A hand that disappears and returns elsewhere is not a swipe."""
+
+    def test_a_gap_does_not_stitch_into_a_false_swipe(self):
+        recognizers = [DynamicGestureRecognizer(), DynamicGestureRecognizer()]
+
+        # Hand 1 is tracked on the left of the frame, long enough to fill the
+        # 16-frame window -- the recogniser reports nothing until it is full,
+        # so a shorter run would hide the bug rather than test it.
+        for lm, lm3 in hands.moving_hand(20, dx=1.0, start=(150, 400)):
+            recognizers[1].update(lm, lm3)
+
+        # It leaves: only hand 0 is detected for a few frames.
+        for _ in range(5):
+            retire_absent(recognizers, [0])
+
+        # It comes back far to the right. Without the reset the window still
+        # holds the old positions, and the jump to these new ones reads as one
+        # long, straight, fast displacement: a phantom 'Swipe Right' fires on
+        # the very first frame back.
+        events = [
+            recognizers[1].update(lm, lm3)
+            for lm, lm3 in hands.moving_hand(4, dx=1.0, start=(1100, 400))
+        ]
+        assert all(e.gesture == DynamicGesture.NONE for e in events)
+
+    def test_a_hand_still_present_keeps_its_history(self):
+        recognizers = [DynamicGestureRecognizer(), DynamicGestureRecognizer()]
+        for lm, lm3 in hands.moving_hand(6, dx=18.0, start=(150, 400)):
+            recognizers[0].update(lm, lm3)
+            retire_absent(recognizers, [0])
+        # Hand 0 was present every frame, so it was never reset and the swipe
+        # it is halfway through can still complete.
+        fired = [
+            recognizers[0].update(lm, lm3)
+            for lm, lm3 in hands.moving_hand(
+                10, dx=18.0, start=(150 + 6 * 18, 400)
+            )
+        ]
+        assert any(e.gesture == DynamicGesture.SWIPE_RIGHT for e in fired)
+
+
+class TestLearnedConfidence:
+    """A learned label must not carry another recogniser's confidence."""
+
+    def test_confidence_falls_as_the_match_worsens(self):
+        model = TrainedGestureRecognizer()
+        for _ in range(3):
+            model.record("wave", hands.open_palm())
+        model.finalise()
+
+        name, distance = model.predict(hands.open_palm())
+        assert name == "wave"
+
+        limit = model.templates[name].threshold
+        confidence = max(0.0, 1.0 - distance / limit)
+        assert 0.0 <= confidence <= 1.0
+        # An exact repeat of the recorded pose is a near-perfect match.
+        assert confidence > 0.9

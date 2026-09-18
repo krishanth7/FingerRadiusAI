@@ -32,7 +32,11 @@ import cv2
 import numpy as np
 
 from src.audio_feedback import AudioFeedback, ToneMapper
-from src.dynamic_gestures import DynamicGesture, DynamicGestureRecognizer
+from src.dynamic_gestures import (
+    DynamicGesture,
+    DynamicGestureRecognizer,
+    retire_absent,
+)
 from src.gesture_trainer import TrainedGestureRecognizer
 from src.gestures import GestureRecognizer
 from src.graph_visualizer import GraphVisualizer
@@ -313,10 +317,21 @@ def main(argv=None) -> int:
         except Exception as error:
             print(f"[WARN] Could not load {args.gestures_file}: {error}")
 
-    recorder = TrainedGestureRecognizer() if args.record else None
-    if recorder is not None:
-        print(f"Recording '{args.record}' -- press SPACE to capture a sample, "
-              f"then Q to save.")
+    # Recording saves the whole model back, so it has to start from whatever
+    # is already at the path it will write to -- otherwise the first save of a
+    # second gesture deletes the first.
+    record_path = args.gestures_file or "gestures.json"
+    recorder = None
+    if args.record:
+        try:
+            recorder = TrainedGestureRecognizer.open_for_recording(record_path)
+        except ValueError as error:
+            print(f"[WARN] Not recording: {error}")
+        else:
+            existing = len(recorder.templates)
+            print(f"Recording '{args.record}' -- press SPACE to capture a "
+                  f"sample, then Q to save to {record_path}"
+                  f"{f' (keeping {existing} existing gesture(s))' if existing else ''}.")
     kalman_banks = [KalmanLandmarkSet() for _ in range(2)]
     graph_viz = GraphVisualizer(width=500, height=260, max_points=200, y_range=(0, 300))
     fps_counter = FPSCounter(window=30)
@@ -348,6 +363,7 @@ def main(argv=None) -> int:
         num_hands = tracker.process(frame)
 
         hand_data = []
+        seen_hands = []
         for hi in range(num_hands):
             lm = tracker.get_landmarks(hi)
             lm_3d = tracker.get_landmarks_3d(hi)
@@ -376,9 +392,20 @@ def main(argv=None) -> int:
                 except Exception:
                     pass
             elif trained is not None:
-                name, _distance = trained.predict(lm)
+                name, distance = trained.predict(lm)
                 if name is not None:
+                    # The confidence has to be replaced along with the name.
+                    # Leaving the geometric recogniser's number behind would
+                    # put a percentage from an entirely different pose next to
+                    # the learned label. A match right on top of the template
+                    # reads 100%, one at the edge of its threshold reads 0%.
+                    limit = trained.templates[name].threshold
                     gesture.gesture = name
+                    gesture.confidence = (
+                        max(0.0, 1.0 - distance / limit) if limit > 0 else 0.0
+                    )
+
+            seen_hands.append(hi)
 
             if not args.no_dynamic:
                 event = motion[hi].update(lm, lm_3d)
@@ -401,6 +428,12 @@ def main(argv=None) -> int:
                 "wrist_radii": wr, "depth_deltas": dd, "landmarks": lm,
                 "gesture": gesture,
             })
+
+        # Hands that were not seen this frame never reached motion[hi] above,
+        # so their trajectories have to be cleared here or a hand that returns
+        # elsewhere stitches a false swipe out of the gap.
+        if not args.no_dynamic:
+            retire_absent(motion, seen_hands)
 
         tracker.draw_all(frame, show_trails)
         for hi, hd in enumerate(hand_data):
@@ -505,7 +538,7 @@ def main(argv=None) -> int:
 
     if recorder is not None and recorder.templates:
         recorder.finalise()
-        recorder.save(args.gestures_file or "gestures.json")
+        recorder.save(record_path)
 
     if args.export_dashboard:
         run_dashboard(csv_exporter, args.export_dashboard)

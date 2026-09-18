@@ -29,7 +29,7 @@ from __future__ import annotations
 import math
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Deque, Dict, List, Optional, Sequence, Tuple
+from typing import Deque, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from src.hand_tracker import LandmarkIndex
 from src.utils import euclidean_distance
@@ -346,3 +346,22 @@ class DynamicGestureRecognizer:
         self._scales.clear()
         self._still_for = 0
         self._cooldown = 0
+
+
+def retire_absent(
+    recognizers: Sequence["DynamicGestureRecognizer"],
+    present: Iterable[int],
+) -> None:
+    """Reset every recogniser whose hand was not seen this frame.
+
+    A recogniser only hears about a hand while that hand is detected, so one
+    that drops out keeps its trajectory forever. If the hand comes back
+    somewhere else, the jump between the old and new fingertip positions is a
+    large, fast displacement -- indistinguishable from a real swipe, and quite
+    capable of completing a circle. Clearing the history on the frames where
+    the hand is missing is what keeps the two apart.
+    """
+    seen = set(present)
+    for index, recognizer in enumerate(recognizers):
+        if index not in seen:
+            recognizer.reset()
