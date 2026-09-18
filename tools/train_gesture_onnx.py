@@ -56,6 +56,11 @@ from tests import synthetic_hands as hands
 MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
 DEFAULT_OUT = os.path.join(MODEL_DIR, "gesture_classifier.onnx")
 
+# The graph targets the oldest onnxruntime requirements.txt allows (1.16),
+# which supports IR version 9 and well past opset 13.
+IR_VERSION = 9
+OPSET = 13
+
 BUILDERS = {
     Gesture.FIST: hands.fist,
     Gesture.OPEN_PALM: hands.open_palm,
@@ -233,8 +238,16 @@ def export_onnx(model: MLP, labels: List[str], path: str) -> str:
     )
     proto = helper.make_model(
         graph, producer_name="FingerRadiusAI",
-        opset_imports=[helper.make_opsetid("", 13)],
+        opset_imports=[helper.make_opsetid("", OPSET)],
     )
+    # Pin the IR version as well as the opset. Without this the stamp is
+    # whatever the installed onnx package happens to default to -- onnx 1.22
+    # writes IR 13 -- and onnxruntime refuses to load a model newer than it
+    # understands:
+    #     Unsupported model IR version: 13, max supported IR version: 11
+    # requirements.txt allows onnxruntime>=1.16, which supports IR 9, so the
+    # shipped model targets that floor rather than the build machine.
+    proto.ir_version = IR_VERSION
     proto.doc_string = (
         "Maps a 44-value hand descriptor (see "
         "src.gesture_trainer.describe_with_orientation) to gesture probabilities. "
@@ -249,6 +262,16 @@ def export_onnx(model: MLP, labels: List[str], path: str) -> str:
     onnx.checker.check_model(proto)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     onnx.save(proto, path)
+
+    # Read it back rather than trusting the write: this is the exact property
+    # a newer machine cannot check by simply loading the file, because a newer
+    # onnxruntime accepts a stamp the supported floor would reject.
+    written = onnx.load(path).ir_version
+    if written != IR_VERSION:
+        raise RuntimeError(
+            f"{path} was written with IR version {written}, expected "
+            f"{IR_VERSION}. Older onnxruntime installs would refuse it."
+        )
     return path
 
 

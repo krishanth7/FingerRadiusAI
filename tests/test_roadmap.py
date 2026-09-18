@@ -26,6 +26,7 @@ from src.gesture_trainer import (
     describe_with_orientation,
 )
 from src.multi_camera import CameraCalibration, StereoRig
+from src.onnx_backend import DEFAULT_GESTURE_MODEL
 from tests import synthetic_hands as hands
 
 
@@ -466,3 +467,43 @@ class TestLearnedConfidence:
         assert 0.0 <= confidence <= 1.0
         # An exact repeat of the recorded pose is a near-perfect match.
         assert confidence > 0.9
+
+
+def _ir_version(path: str) -> int:
+    """Read a model's IR version straight out of the protobuf header.
+
+    Deliberately not via onnx.load: the whole point of this check is to catch
+    a stamp that *this* machine's onnxruntime accepts but an older supported
+    one would not, so it must not depend on either package being installed.
+
+    ModelProto field 1 is ``ir_version``, a varint, and it is written first --
+    tag byte 0x08 followed by the value.
+    """
+    with open(path, "rb") as handle:
+        data = handle.read(16)
+    assert data[0] == 0x08, "ir_version is not the first field of this protobuf"
+    value = shift = 0
+    for byte in data[1:]:
+        value |= (byte & 0x7F) << shift
+        if not byte & 0x80:
+            return value
+        shift += 7
+    raise AssertionError("truncated varint")
+
+
+class TestTheShippedModelLoadsOnOldRuntimes:
+    """The committed model must load on the oldest onnxruntime we allow.
+
+    requirements.txt permits onnxruntime>=1.16, which supports IR version 9.
+    A newer build machine stamps a higher version -- onnx 1.22 writes IR 13 --
+    and simply loading the file here would not catch it, because a newer
+    onnxruntime accepts exactly what an older one rejects with
+    "Unsupported model IR version".
+    """
+
+    MAX_IR_VERSION = 9
+
+    def test_committed_model_targets_the_supported_floor(self):
+        if not os.path.exists(DEFAULT_GESTURE_MODEL):
+            pytest.skip("Run tools/train_gesture_onnx.py to build the model.")
+        assert _ir_version(DEFAULT_GESTURE_MODEL) <= self.MAX_IR_VERSION
