@@ -38,3 +38,7 @@ radius_data.csv
 # shows them. The Plotly HTML is not -- Plotly embeds a random id, so it is
 # 4.7 MB of churn on every regeneration. Run docs/make_examples.py for it.
 docs/examples/sample_dashboard.html
+
+# Recorded gestures and rig calibration are per-user, not per-repo.
+gestures.json
+stereo_rig.json

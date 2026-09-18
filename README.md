@@ -48,6 +48,13 @@ The system supports **simultaneous two-hand tracking**, monitoring all **21 land
 - ✅ Professional corporate dashboard UI
 - ✅ Side analytics panel with live stats, radius bars, and controls
 
+### v4.0
+- ✅ **Dynamic gestures** — swipe, tap, hold and circle, from motion over time
+- ✅ **Gesture training** — record your own poses; JSON models, never pickle
+- ✅ **Multi-camera** — stereo triangulation to true metric depth
+- ✅ **Bundled ONNX model** — a trained gesture classifier that actually ships
+- ✅ **Ruby, R and Go ports** — pinned to Python by a shared conformance fixture
+
 ### v3.0
 - ✅ **Gesture library** — peace, thumbs-up, thumbs-down, OK, pointing, pinch, fist, open palm
 - ✅ **Video file input** — process a recording instead of a camera, with pause, seek and frame step
@@ -77,16 +84,30 @@ FingerRadiusAI/
 │   ├── video_source.py        # Camera or file, with playback control
 │   ├── dashboard.py           # Interactive Plotly report
 │   ├── audio_feedback.py      # Radius to pitch, live or to WAV
-│   ├── onnx_backend.py        # Optional ONNX Runtime acceleration
+│   ├── onnx_backend.py        # ONNX Runtime: gesture model + detector runner
+│   ├── dynamic_gestures.py    # Swipe, tap, hold, circle -- motion over time
+│   ├── gesture_trainer.py     # Record and recognise your own gestures
+│   ├── multi_camera.py        # Stereo triangulation to metric depth
 │   └── gui.py                 # Tkinter window
 │
+├── ports/                     # The portable core in three other languages
+│   ├── ruby/  r/  go/         # Each with its own conformance test
+│   ├── fixtures/              # Shared source of truth, generated from Python
+│   └── run_conformance.sh     # Run every port against it
+│
+├── tools/
+│   ├── train_gesture_onnx.py  # Trains and exports the bundled ONNX model
+│   └── make_fixture.py        # Regenerates the conformance fixture
+│
 ├── tests/
-│   ├── synthetic_hands.py     # Landmark sets for tests -- no camera needed
+│   ├── synthetic_hands.py     # Landmark sets and motion -- no camera needed
 │   ├── test_features.py       # Gestures, Kalman, themes, audio, ONNX
+│   ├── test_roadmap.py        # Dynamic, training, multi-camera, ONNX model
 │   └── test_pipeline.py       # End-to-end over a generated video file
 │
 ├── models/
-│   └── hand_landmarker.task   # MediaPipe hand landmark model
+│   ├── hand_landmarker.task   # MediaPipe hand landmark model
+│   └── gesture_classifier.onnx # Trained here by tools/train_gesture_onnx.py
 │
 ├── main.py                    # Application entry point
 ├── requirements.txt           # Python dependencies
@@ -168,6 +189,7 @@ Run `python main.py --help` for the full list.
 | `P`         | Pause / resume (video file)     |
 | `H`         | Write the Plotly dashboard      |
 | `←` / `→`   | Seek 5 seconds (video file)     |
+| `SPACE`     | Capture a sample while recording a gesture |
 | `S`         | Take a screenshot               |
 
 ### Output
@@ -377,6 +399,188 @@ Three things stated plainly, because "GPU acceleration" is easy to overclaim:
 
 ---
 
+### Dynamic gestures
+
+A static recogniser looks at one frame and asks what shape the hand is in. It
+can never see a swipe, because a swipe is not a shape — it is a shape that
+moved. `src/dynamic_gestures.py` keeps a short trajectory and classifies that:
+
+| Motion | How it is recognised |
+|---|---|
+| **Swipe** ×4 | Fast, straight, sustained travel; direction from the heading |
+| **Tap** | The fingertip dips toward the camera and returns — a V in *z*, not in x/y |
+| **Hold** | Still for 24 frames. A trigger you cannot produce accidentally |
+| **Circle** | Sustained turning in one direction that closes on itself |
+
+Travel is measured in **hand-widths, not pixels**, so the same swipe registers
+at any distance from the camera. Each motion fires once and then locks out, or
+one swipe would be reported on every frame as the hand decelerates.
+
+**A bug worth recording:** a tap has almost no lateral travel, so the
+stillness check swallowed every one of them before tap detection ran. Tap is
+now tested first. The test suite also asserts a zigzag is *not* a circle —
+turning accumulates on a zigzag too, and consistency of direction is what
+rejects it.
+
+---
+
+### Gesture training
+
+The geometric recogniser knows eight poses and cannot learn a ninth without
+someone writing new rules. `src/gesture_trainer.py` learns from examples:
+
+```bash
+python main.py --record my-wave        # SPACE to capture, Q to save
+python main.py --gestures-file gestures.json
+```
+
+A hand becomes a **descriptor**: 21 points translated to the wrist, scaled by
+hand size, and rotated so the middle metacarpal points a fixed way. After that,
+the same pose made by a large hand at the edge of frame and a small one in the
+centre produces nearly the same numbers — measured at **0.02–0.12 apart across
+a 7.5× scale range and 140° of rotation**, against a match threshold of 0.33.
+
+Recognition is nearest-neighbour. That is deliberate: it trains from three
+samples rather than three thousand, runs in microseconds, stores a readable
+JSON model, and when it is wrong you can see which template it matched and by
+how far. Verified at **15/15 on unseen scales and rotations**.
+
+An untaught pose returns `None`, not the nearest label. An unknown hand is not
+a weak example of the closest gesture, and saying so is more useful than
+guessing.
+
+> Models are **plain JSON, never pickle**. A gesture file is something people
+> share, and loading a shared pickle executes whatever is inside it.
+
+---
+
+### Multi-camera depth
+
+MediaPipe's *z* is relative — roughly how far a landmark sits in front of the
+wrist, in units scaled to the hand. It is enough to say which finger is nearer.
+It is not a measurement, so you cannot ask it how many centimetres apart two
+fingertips are.
+
+Two calibrated cameras can answer that. `src/multi_camera.py` solves for the
+point closest to both rays at once, by linear triangulation (Hartley &
+Zisserman §12.2):
+
+```python
+from src.multi_camera import CameraCalibration, StereoRig
+
+left  = CameraCalibration.simple("L", (-0.15, 0, 0), look_at=(0, 0, 1.0))
+right = CameraCalibration.simple("R", ( 0.15, 0, 0), look_at=(0, 0, 1.0))
+rig = StereoRig(left, right)
+
+result = rig.triangulate_hand(left_landmarks, right_landmarks)
+print(result.distance(4, 8) * 100, "cm")      # thumb tip to index tip, metric
+print(result.mean_error, "px")                # how much to trust it
+```
+
+Measured on a 30 cm baseline at ~1 m:
+
+| Input | 3D accuracy | Reprojection |
+|---|---|---|
+| Exact observations | `1.5e-15` m | `1.1e-13` px |
+| 1 px of detector noise | **4.9 mm** mean, 13 mm worst | 0.50 px |
+
+**Reprojection error is the honest quality signal** — the distance between
+where each camera saw the landmark and where the solved point projects back to.
+A large value means the calibration is wrong or the cameras are not looking at
+the same hand. The test suite shuffles one view to prove it catches exactly
+that: the solver still returns points, and the error is the only thing that
+flags them as nonsense.
+
+---
+
+### The bundled ONNX model
+
+`models/gesture_classifier.onnx` — **8.8 KiB, trained here, and it ships.**
+
+```bash
+python main.py --onnx-gestures
+python tools/train_gesture_onnx.py     # retrain it on your own data
+```
+
+Be precise about what it is: it maps **21 landmarks to a gesture**. It does
+*not* detect landmarks — that is still MediaPipe's job, because
+`hand_landmarker.task` is a bundle of TFLite graphs that cannot be converted
+here, and training a detector needs a photographic dataset this project does
+not have and should not invent.
+
+What it replaces is the hand-written rule cascade, with weights you can
+retrain on your own recordings.
+
+```
+3200 samples, 8 classes
+train accuracy 1.0000   held-out accuracy 1.0000
+ONNX Runtime accuracy 1.0000, agrees with NumPy on 100.00%
+batch of 8: 0.176 ms -> 45,550 hands/sec on CPUExecutionProvider
+```
+
+**It did not start there.** The first version scored 84.5%, and the confusion
+matrix showed why: six classes at 100%, thumbs-up and thumbs-down at *chance*.
+The descriptor rotation-normalises on purpose — and those two poses are the
+same shape pointing opposite ways, so normalisation deleted the only
+difference between them.
+
+The measure that shows it is **separability**, mean between-class distance over
+mean within-class distance:
+
+| Features | Separability | Meaning |
+|---|---:|---|
+| 42, rotation-invariant | **0.96** | Two examples of the *same* gesture sit further apart than one of each — inseparable |
+| 44, orientation appended | **1.05** | Separable |
+
+Two extra numbers — the sine and cosine of the hand's actual orientation —
+took the model from 84.5% to 100%. Both the separability figures and the
+accuracy are asserted in `tests/test_roadmap.py`.
+
+---
+
+### Ports: Ruby, R and Go
+
+Landmark detection is MediaPipe's and stays in Python. Everything after it —
+gesture geometry, radius maths, Kalman smoothing — is arithmetic on 21 points,
+and there is no reason that has to be Python.
+
+```
+ports/
+├── ruby/finger_radius.rb     ports/ruby/conformance_test.rb
+├── r/fingerradius.R          ports/r/conformance_test.R
+├── go/fingerradius.go        ports/go/conformance_test.go
+└── fixtures/conformance.json the shared source of truth
+```
+
+**The ports are pinned, not trusted.** `ports/fixtures/conformance.json` holds
+inputs and the outputs the Python implementation produces. A port passes only
+if it reproduces them — gestures and finger flags *exactly*, radii and Kalman
+output to `1e-6`.
+
+```bash
+$ ./ports/run_conformance.sh
+Conformance: every port must reproduce the Python fixture
+------------------------------------------------------------
+  python   python: PASS - 180 checks (Kalman worst 4.935e-10)
+  ruby     ruby: PASS - 180 checks against the Python fixture
+  r        r: PASS - 180 checks (Kalman worst 4.935e-10)
+  go       ok  github.com/krishanth7/FingerRadiusAI/ports/go  0.004s
+------------------------------------------------------------
+All 4 available port(s) agree with Python.
+```
+
+A missing toolchain is reported and skipped rather than failing, so this is
+useful on a machine with only some of them. Changed a threshold? Run
+`python tools/make_fixture.py`, then the script tells you which ports need the
+same change.
+
+> **R note:** MediaPipe indexes landmarks 0–20 and R indexes from 1, so every
+> constant in the R port is the MediaPipe index plus one. That off-by-one is
+> the single most likely porting bug, which is why they are named constants
+> rather than written inline — and why the fixture exists.
+
+---
+
 ### Tkinter GUI
 
 ```bash
@@ -427,13 +631,25 @@ Camera Frame
 - [x] **GPU acceleration** — `src/onnx_backend.py`: ONNX Runtime provider selection and benchmarking
 - [x] **Kalman filter** — `src/kalman.py`: constant-velocity filter, 14.7% lower RMSE than the EMA it replaces
 - [x] **Custom themes** — `src/themes.py`: corporate, cyberpunk, minimal, retro
+- [x] **Dynamic gestures** — `src/dynamic_gestures.py`: swipe (4 directions), tap, hold, circle
+- [x] **Gesture training** — `src/gesture_trainer.py`: record your own, saved as JSON, no pickle
+- [x] **Multi-camera** — `src/multi_camera.py`: stereo triangulation to true metric depth
+- [x] **An ONNX hand model** — `models/gesture_classifier.onnx` ships, trained here, 100% held-out
+- [x] **Ports to other languages** — `ports/`: Ruby, R and Go, pinned to Python by a shared fixture
 
-### Still open
+**Every roadmap item is now implemented.** Nothing on this list is aspirational.
 
-- [ ] **Dynamic gestures** — swipes and taps, which need motion over time rather than a single pose
-- [ ] **Gesture training** — record your own gesture and have it recognised, instead of the fixed geometric set
-- [ ] **Multi-camera** — triangulate two views for true metric depth rather than MediaPipe's relative z
-- [ ] **An ONNX hand model** — the runner exists; no exported model ships with this repository (see the note below)
+### Where it could go next
+
+These are genuinely unbuilt, and listed so the finished list above stays honest:
+
+- [ ] **An ONNX landmark detector** — the gesture model ships, but detection is
+      still MediaPipe's. Training a detector needs a photographic dataset this
+      project does not have.
+- [ ] **Three or more cameras** — the rig triangulates from two views; bundle
+      adjustment over more would be more accurate still.
+- [ ] **Dynamic gesture training** — you can record a *pose*; recording a
+      *motion* needs sequence alignment, not nearest neighbour.
 
 ---
 
@@ -446,12 +662,18 @@ pytest -q
 
 ```
 $ pytest -q
-........................................................................ [ 88%]
-.........                                                                [100%]
-81 passed in 3.99s
+........................................................................ [ 55%]
+........................................................................ [100%]
+131 passed in 4.76s
 ```
 
-81 tests, about 4 seconds, **no camera, no display and no GPU required**.
+131 tests, about 5 seconds, **no camera, no display and no GPU required**.
+
+Plus the four-language conformance suite:
+
+```bash
+./ports/run_conformance.sh     # Python, Ruby, R and Go against one fixture
+```
 Gesture recognition is checked against synthetic landmark sets built in
 `tests/synthetic_hands.py`, and `tests/test_pipeline.py` generates a video file
 and drives the whole chain through it — source, tracker, radius calculation,

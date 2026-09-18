@@ -11,12 +11,16 @@ Usage:
     python main.py --audio                  sonify the thumb-index radius
     python main.py --onnx-model hand.onnx   run a user-supplied ONNX model
     python main.py --list-providers         report ONNX Runtime capability
+    python main.py --onnx-gestures          name poses with the bundled ONNX model
+    python main.py --record wave            teach it a gesture of your own
+    python main.py --gestures-file g.json   use gestures you recorded
 
 Keys:
     Q / ESC  Quit          E  Export CSV        R  Reset buffers
     T        Trails        G  Graph             S  Screenshot
     D        2D / 3D       K  Kalman / EMA      C  Cycle theme
     A        Audio         P  Pause (file)      H  Dashboard HTML
+    SPACE    Capture a sample when recording a gesture
     LEFT / RIGHT  Seek 5s (file)
 """
 
@@ -28,11 +32,13 @@ import cv2
 import numpy as np
 
 from src.audio_feedback import AudioFeedback, ToneMapper
+from src.dynamic_gestures import DynamicGesture, DynamicGestureRecognizer
+from src.gesture_trainer import TrainedGestureRecognizer
 from src.gestures import GestureRecognizer
 from src.graph_visualizer import GraphVisualizer
 from src.hand_tracker import HandTracker
 from src.kalman import KalmanLandmarkSet
-from src.onnx_backend import describe_runtime
+from src.onnx_backend import DEFAULT_GESTURE_MODEL, describe_runtime
 from src.radius_calculator import RadiusCalculator
 from src.themes import THEME_NAMES, apply_theme, current_theme, next_theme
 from src.utils import (
@@ -215,11 +221,20 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--fast", action="store_true",
                         help="Process a file as fast as possible, ignoring its frame rate.")
     parser.add_argument("--onnx-model", default=None,
-                        help="Path to an ONNX hand model. None ships with this repo.")
+                        help="Path to your own ONNX landmark DETECTOR. None ships; the bundled "
+                             "model is a gesture classifier, see --onnx-gestures.")
     parser.add_argument("--list-providers", action="store_true",
                         help="Report ONNX Runtime providers and exit.")
     parser.add_argument("--export-dashboard", metavar="HTML", default=None,
                         help="On exit, write an interactive Plotly report here.")
+    parser.add_argument("--onnx-gestures", action="store_true",
+                        help="Name poses with the bundled ONNX model instead of the geometric rules.")
+    parser.add_argument("--gestures-file", default=None,
+                        help="Load gestures you recorded yourself (see --record).")
+    parser.add_argument("--record", metavar="NAME", default=None,
+                        help="Record NAME from this session; press SPACE to capture a sample.")
+    parser.add_argument("--no-dynamic", action="store_true",
+                        help="Turn off swipe, tap, hold and circle detection.")
     return parser.parse_args(argv)
 
 
@@ -279,6 +294,29 @@ def main(argv=None) -> int:
                           smoothing_alpha=0.4)
     calculators = [RadiusCalculator(smoothing_alpha=0.35) for _ in range(2)]
     recognizers = [GestureRecognizer(hold_frames=3) for _ in range(2)]
+    motion = [DynamicGestureRecognizer() for _ in range(2)]
+
+    onnx_gestures = None
+    if args.onnx_gestures:
+        try:
+            from src.onnx_backend import OnnxGestureClassifier
+            onnx_gestures = OnnxGestureClassifier()
+            print(f"Gesture: {onnx_gestures.describe()}")
+        except Exception as error:
+            print(f"[WARN] ONNX gestures unavailable, using the rules: {error}")
+
+    trained = None
+    if args.gestures_file:
+        try:
+            trained = TrainedGestureRecognizer.load(args.gestures_file)
+            print(f"Learned: {trained.describe()}")
+        except Exception as error:
+            print(f"[WARN] Could not load {args.gestures_file}: {error}")
+
+    recorder = TrainedGestureRecognizer() if args.record else None
+    if recorder is not None:
+        print(f"Recording '{args.record}' -- press SPACE to capture a sample, "
+              f"then Q to save.")
     kalman_banks = [KalmanLandmarkSet() for _ in range(2)]
     graph_viz = GraphVisualizer(width=500, height=260, max_points=200, y_range=(0, 300))
     fps_counter = FPSCounter(window=30)
@@ -328,6 +366,25 @@ def main(argv=None) -> int:
                 lm, landmarks_3d=lm_3d, use_3d=use_3d
             )
             gesture = recognizers[hi].update(lm)
+
+            # The ONNX model and a user-recorded set both override the
+            # geometric verdict when present, in that order of preference.
+            if onnx_gestures is not None:
+                try:
+                    name, probability = onnx_gestures.classify(lm)
+                    gesture.gesture, gesture.confidence = name, probability
+                except Exception:
+                    pass
+            elif trained is not None:
+                name, _distance = trained.predict(lm)
+                if name is not None:
+                    gesture.gesture = name
+
+            if not args.no_dynamic:
+                event = motion[hi].update(lm, lm_3d)
+                if event.gesture != DynamicGesture.NONE:
+                    print(f"[MOTION] {tracker.get_label(hi)}: {event}")
+
             label = tracker.get_label(hi)
             graph_viz.update(pr, hand_idx=hi, label=label)
 
@@ -435,10 +492,20 @@ def main(argv=None) -> int:
             source.seek_relative(-5)
         elif key == 83:                      # right arrow
             source.seek_relative(5)
+        elif key == 32 and recorder is not None:      # SPACE
+            if hand_data:
+                count = recorder.record(args.record, hand_data[0]["landmarks"])
+                print(f"[RECORD] '{args.record}' sample {count}")
+            else:
+                print("[RECORD] No hand in frame.")
         elif key == ord('s'):
             fn = f"screenshot_{int(time.time())}.png"
             cv2.imwrite(fn, composite)
             print(f"[INFO] Screenshot -> {fn}")
+
+    if recorder is not None and recorder.templates:
+        recorder.finalise()
+        recorder.save(args.gestures_file or "gestures.json")
 
     if args.export_dashboard:
         run_dashboard(csv_exporter, args.export_dashboard)

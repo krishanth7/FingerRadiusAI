@@ -61,3 +61,36 @@ jobs:
     - name: Regenerate the README figures
       run: |
         python docs/make_examples.py
+
+    # The bundled ONNX model is committed, so it can drift from the training
+    # script that produced it. Retraining proves the script still works and
+    # still reaches the accuracy the README claims.
+    - name: Retrain the bundled ONNX gesture model
+      run: |
+        python tools/train_gesture_onnx.py --out /tmp/gesture_check.onnx
+
+    # Ruby, R and Go implement the same maths as Python. The only thing
+    # keeping them honest is running all four against one fixture.
+    - name: Set up Ruby
+      uses: ruby/setup-ruby@v1
+      with:
+        ruby-version: "3.2"
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: "1.22"
+
+    - name: Set up R
+      uses: r-lib/actions/setup-r@v2
+      with:
+        r-version: "release"
+
+    - name: Install jsonlite for the R port
+      run: |
+        sudo apt-get install -y -qq r-cran-jsonlite || \
+          Rscript -e 'install.packages("jsonlite", repos="https://cloud.r-project.org")'
+
+    - name: Cross-language conformance
+      run: |
+        ./ports/run_conformance.sh
