@@ -1,4 +1,32 @@
+# Core — required
 opencv-python>=4.8.0
 mediapipe>=0.10.0
 numpy>=1.24.0
 matplotlib>=3.7.0
+
+# Optional. Each feature degrades to a clear message when its package is
+# absent; none of them is needed for live tracking.
+
+# Interactive Plotly dashboard (H key, or --export-dashboard)
+plotly>=5.18.0
+
+# ONNX Runtime acceleration (--onnx-model). Install ONE of these:
+#   onnxruntime            CPU only
+#   onnxruntime-gpu        NVIDIA CUDA
+#   onnxruntime-directml   Windows DirectML
+onnxruntime>=1.16.0
+
+# Tkinter GUI (--gui) renders frames through Pillow.
+# Tkinter itself is in the standard library, but some builds omit it:
+#   Debian/Ubuntu: sudo apt install python3-tk
+#   Fedora:        sudo dnf install python3-tkinter
+#   macOS:         brew install python-tk
+pillow>=10.0.0
+
+# Live audio output (--audio). Without either of these the audio feature
+# still maps radii to notes and renders a WAV; it just cannot play live.
+# sounddevice>=0.4.6
+# simpleaudio>=1.0.4
+
+# Tests
+# pytest>=7.4

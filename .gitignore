@@ -26,3 +26,9 @@ Thumbs.db
 *.csv
 screenshot_*.png
 radius_data.csv
+
+# Session artefacts
+dashboard.html
+session_audio.wav
+screenshot_*.png
+radius_data.csv
