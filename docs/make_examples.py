@@ -271,13 +271,68 @@ def sample_dashboard(path=os.path.join(OUT, "sample_dashboard.html")):
     return path
 
 
+def screenshot_dashboard(html_path, png_path=os.path.join(OUT, "dashboard.png")):
+    """Photograph the Plotly report in a real browser.
+
+    Plotly draws with JavaScript, so the only way to get a picture of the
+    report is to load it in a browser. That needs Playwright and a Chromium
+    build, which not every machine has -- so a miss here is reported and
+    skipped rather than failing the whole regeneration. The existing
+    dashboard.png is left untouched in that case.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        print("  dashboard.png     SKIPPED - pip install playwright && playwright install chromium")
+        return None
+
+    import http.server
+    import socketserver
+    import threading
+
+    # Plotly's bundle will not run from a file:// URL in every browser, so
+    # serve the directory for the length of the screenshot.
+    handler = lambda *a, **k: http.server.SimpleHTTPRequestHandler(*a, directory=OUT, **k)
+    with socketserver.TCPServer(("127.0.0.1", 0), handler) as httpd:
+        port = httpd.server_address[1]
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with sync_playwright() as pw:
+                # Some environments ship Chromium outside Playwright's own
+                # cache. PLAYWRIGHT_CHROMIUM_PATH points at it.
+                launch_kwargs = {}
+                executable = os.environ.get("PLAYWRIGHT_CHROMIUM_PATH")
+                if executable:
+                    launch_kwargs["executable_path"] = executable
+                    launch_kwargs["args"] = ["--no-sandbox"]
+                browser = pw.chromium.launch(**launch_kwargs)
+                page = browser.new_context(
+                    viewport={"width": 1400, "height": 900}, device_scale_factor=2
+                ).new_page()
+                page.goto(f"http://127.0.0.1:{port}/{os.path.basename(html_path)}",
+                          wait_until="networkidle")
+                page.wait_for_timeout(2500)
+                page.screenshot(path=png_path)
+                browser.close()
+        except Exception as error:
+            print(f"  dashboard.png     SKIPPED - {type(error).__name__}: {error}")
+            return None
+        finally:
+            httpd.shutdown()
+
+    print(f"  dashboard.png     {os.path.getsize(png_path) // 1024} KiB")
+    return png_path
+
+
 def main() -> int:
     print("Regenerating README examples from live code:")
     gesture_grid()
     theme_strip()
     kalman_chart()
     audio_chart()
-    sample_dashboard()
+    html = sample_dashboard()
+    screenshot_dashboard(html)
     print(f"\nWritten to {OUT}")
     return 0
 

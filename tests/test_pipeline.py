@@ -25,6 +25,40 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.video_source import VideoSource
 
 
+def mediapipe_reason() -> str:
+    """Return why MediaPipe cannot run here, or an empty string if it can.
+
+    ``import mediapipe`` succeeds on a bare machine, but building a
+    HandLandmarker dlopens the system GL stack, so the failure arrives later
+    and as an OSError rather than an ImportError:
+
+        OSError: libEGL.so.1: cannot open shared object file
+
+    A stock GitHub Actions ubuntu runner has no libEGL, so this has to be a
+    skip with a readable reason rather than an opaque crash. Installing
+    ``libegl1`` and ``libgl1`` -- which the workflow now does -- makes the
+    test run for real instead of skipping.
+    """
+    try:
+        from src.hand_tracker import HandTracker
+
+        HandTracker(max_num_hands=1).release()
+    except OSError as error:
+        return f"MediaPipe cannot initialise: {error}. Install libegl1 and libgl1."
+    except ImportError as error:  # pragma: no cover - mediapipe absent
+        return f"MediaPipe is not installed: {error}"
+    except FileNotFoundError as error:  # pragma: no cover - model absent
+        return f"Hand landmark model missing: {error}"
+    return ""
+
+
+#: Evaluated once at import; building a landmarker twice per test is wasteful.
+MEDIAPIPE_REASON = mediapipe_reason()
+requires_mediapipe = pytest.mark.skipif(
+    bool(MEDIAPIPE_REASON), reason=MEDIAPIPE_REASON or "MediaPipe is available"
+)
+
+
 @pytest.fixture(scope="module")
 def clip(tmp_path_factory):
     """A short synthetic clip with a moving shape, written to disk."""
@@ -96,6 +130,7 @@ class TestVideoSource:
 
 
 class TestFullPipeline:
+    @requires_mediapipe
     def test_clip_runs_through_tracker_and_exports(self, clip, tmp_path):
         """Drive the whole chain over a file, exactly as main.py does."""
         from src.audio_feedback import AudioFeedback
@@ -156,6 +191,32 @@ class TestFullPipeline:
         assert "plotly-graph-div" in open(html, encoding="utf-8").read()
 
         wav = audio.render_wav([100.0, 200.0, 300.0], str(tmp_path / "out.wav"))
+        assert os.path.getsize(wav) > 1000
+
+    def test_export_chain_without_mediapipe(self, tmp_path):
+        """CSV, dashboard and audio export, with no tracking involved.
+
+        Deliberately not gated on MediaPipe: these are the parts that must keep
+        working on a machine with no GL stack, and gating them would have hidden
+        a regression behind a skip.
+        """
+        from src.audio_feedback import AudioFeedback
+        from src.dashboard import build_dashboard
+        from src.utils import CSVExporter
+
+        exporter = CSVExporter()
+        for i in range(40):
+            exporter.record({"Thumb-Index": 100.0 + i, "Index-Middle": 60.0 + i / 2},
+                            "Open|Peace")
+        csv_path = str(tmp_path / "chain.csv")
+        exporter.export(csv_path)
+        assert os.path.exists(csv_path)
+
+        html = build_dashboard(csv_path, str(tmp_path / "chain.html"))
+        assert os.path.getsize(html) > 100_000
+        assert "plotly-graph-div" in open(html, encoding="utf-8").read()
+
+        wav = AudioFeedback().render_wav([80.0, 160.0, 240.0], str(tmp_path / "chain.wav"))
         assert os.path.getsize(wav) > 1000
 
 
